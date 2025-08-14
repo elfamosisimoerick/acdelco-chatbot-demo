@@ -3,17 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Chatbot Refaccionaria ACDelco</title>
+<title>Catálogo ACDelco (Datos Reales)</title>
 <style>
-    body { font-family: Arial, sans-serif; padding: 20px; background: #f4f4f4; }
-    h1 { color: #004aad; text-align: center; }
-    select { padding: 10px; margin: 10px 0; width: 100%; max-width: 400px; }
-    .resultado { margin-top: 20px; padding: 15px; background: #fff; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.1); max-width: 400px; }
+  body { font-family: Arial, sans-serif; padding: 20px; background: #f4f4f4; }
+  h1 { color: #004aad; text-align: center; }
+  select { padding: 10px; margin: 10px 0; width: 100%; max-width: 420px; }
+  .resultado { margin-top: 20px; padding: 15px; background: #fff; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.1); max-width: 420px; }
+  .hint { color:#666; font-size: 14px; }
 </style>
 </head>
 <body>
-
 <h1>Catálogo ACDelco</h1>
+<div class="hint">Los datos se cargan desde <code>data.json</code>.</div>
 
 <select id="categoria"><option value="">-- Selecciona Categoría --</option></select>
 <select id="armadora" disabled><option value="">-- Selecciona Armadora --</option></select>
@@ -23,11 +24,16 @@
 <div class="resultado" id="resultado">Selecciona una categoría para empezar.</div>
 
 <script>
-const DATA = [
-    {categoria: "Aceite", armadora: "Chevrolet", modelo: "Aveo", anio: "2019", producto: "Aceite 5W-30", codigo: "ACD123", precio: "$350", compatibilidad: "Motores 1.6L"},
-    {categoria: "Filtros", armadora: "Nissan", modelo: "Sentra", anio: "2018", producto: "Filtro de Aceite", codigo: "ACD210", precio: "$120", compatibilidad: "Motores 1.8L"},
-    {categoria: "Baterías", armadora: "Toyota", modelo: "Corolla", anio: "2021", producto: "Batería 12V", codigo: "ACD310", precio: "$1,500", compatibilidad: "Todos los modelos"}
-];
+let DATA = [];
+let COLS = {
+  categoria: "Categoría",
+  armadora: "Armadora",
+  modelo: "Modelo",
+  anio: "Año",
+  producto: "Producto",
+  codigo: "Código",
+  precio: "Precio"
+};
 
 const categoriaSelect = document.getElementById("categoria");
 const armadoraSelect = document.getElementById("armadora");
@@ -35,66 +41,101 @@ const modeloSelect = document.getElementById("modelo");
 const anioSelect = document.getElementById("anio");
 const resultadoDiv = document.getElementById("resultado");
 
-[...new Set(DATA.map(item => item.categoria))].forEach(cat => {
-    let opt = document.createElement("option");
-    opt.value = cat; opt.textContent = cat;
-    categoriaSelect.appendChild(opt);
-});
+function unique(arr) { return Array.from(new Set(arr)).sort(); }
+function val(r, k) { return (r[k] || '').toString().trim(); }
 
-categoriaSelect.addEventListener("change", () => {
-    armadoraSelect.innerHTML = '<option value="">-- Selecciona Armadora --</option>';
-    modeloSelect.innerHTML = '<option value="">-- Selecciona Modelo --</option>';
-    anioSelect.innerHTML = '<option value="">-- Selecciona Año --</option>';
-    armadoraSelect.disabled = true; modeloSelect.disabled = true; anioSelect.disabled = true;
-    resultadoDiv.textContent = "";
-    if(categoriaSelect.value) {
-        [...new Set(DATA.filter(i => i.categoria === categoriaSelect.value).map(i => i.armadora))].forEach(arm => {
-            let opt = document.createElement("option");
-            opt.value = arm; opt.textContent = arm;
-            armadoraSelect.appendChild(opt);
-        });
-        armadoraSelect.disabled = false;
-    }
-});
+function fillCategorias() {
+  const cats = unique(DATA.map(r => val(r, COLS.categoria)).filter(Boolean));
+  categoriaSelect.innerHTML = '<option value="">-- Selecciona Categoría --</option>' + cats.map(c => `<option value="${c}">${c}</option>`).join('');
+}
 
-armadoraSelect.addEventListener("change", () => {
-    modeloSelect.innerHTML = '<option value="">-- Selecciona Modelo --</option>';
-    anioSelect.innerHTML = '<option value="">-- Selecciona Año --</option>';
-    modeloSelect.disabled = true; anioSelect.disabled = true;
-    resultadoDiv.textContent = "";
-    if(armadoraSelect.value) {
-        [...new Set(DATA.filter(i => i.categoria === categoriaSelect.value && i.armadora === armadoraSelect.value).map(i => i.modelo))].forEach(mod => {
-            let opt = document.createElement("option");
-            opt.value = mod; opt.textContent = mod;
-            modeloSelect.appendChild(opt);
-        });
-        modeloSelect.disabled = false;
-    }
-});
+function onCategoriaChange() {
+  armadoraSelect.innerHTML = '<option value="">-- Selecciona Armadora --</option>';
+  modeloSelect.innerHTML = '<option value="">-- Selecciona Modelo --</option>';
+  anioSelect.innerHTML = '<option value="">-- Selecciona Año --</option>';
+  armadoraSelect.disabled = true; modeloSelect.disabled = true; anioSelect.disabled = true;
+  resultadoDiv.textContent = "";
+  const cat = categoriaSelect.value;
+  if(cat) {
+    const arms = unique(DATA
+      .filter(r => val(r, COLS.categoria) === cat)
+      .map(r => val(r, COLS.armadora))
+      .filter(Boolean));
+    armadoraSelect.innerHTML += arms.map(a => `<option value="${a}">${a}</option>`).join('');
+    armadoraSelect.disabled = false;
+  }
+}
 
-modeloSelect.addEventListener("change", () => {
-    anioSelect.innerHTML = '<option value="">-- Selecciona Año --</option>';
-    anioSelect.disabled = true;
-    resultadoDiv.textContent = "";
-    if(modeloSelect.value) {
-        [...new Set(DATA.filter(i => i.categoria === categoriaSelect.value && i.armadora === armadoraSelect.value && i.modelo === modeloSelect.value).map(i => i.anio))].forEach(year => {
-            let opt = document.createElement("option");
-            opt.value = year; opt.textContent = year;
-            anioSelect.appendChild(opt);
-        });
-        anioSelect.disabled = false;
-    }
-});
+function onArmadoraChange() {
+  modeloSelect.innerHTML = '<option value="">-- Selecciona Modelo --</option>';
+  anioSelect.innerHTML = '<option value="">-- Selecciona Año --</option>';
+  modeloSelect.disabled = true; anioSelect.disabled = true;
+  resultadoDiv.textContent = "";
+  const cat = categoriaSelect.value;
+  const arm = armadoraSelect.value;
+  if(arm) {
+    const mods = unique(DATA
+      .filter(r => val(r, COLS.categoria) === cat && val(r, COLS.armadora) === arm)
+      .map(r => val(r, COLS.modelo))
+      .filter(Boolean));
+    modeloSelect.innerHTML += mods.map(m => `<option value="${m}">${m}</option>`).join('');
+    modeloSelect.disabled = false;
+  }
+}
 
-anioSelect.addEventListener("change", () => {
-    const r = DATA.find(i => i.categoria === categoriaSelect.value && i.armadora === armadoraSelect.value && i.modelo === modeloSelect.value && i.anio === anioSelect.value);
-    if(r) {
-        resultadoDiv.innerHTML = `<strong>Producto:</strong> ${r.producto}<br><strong>Código:</strong> ${r.codigo}<br><strong>Precio:</strong> ${r.precio}<br><strong>Compatibilidad:</strong> ${r.compatibilidad}`;
-    } else {
-        resultadoDiv.textContent = "No se encontró información.";
-    }
-});
+function onModeloChange() {
+  anioSelect.innerHTML = '<option value="">-- Selecciona Año --</option>';
+  anioSelect.disabled = true;
+  resultadoDiv.textContent = "";
+  const cat = categoriaSelect.value;
+  const arm = armadoraSelect.value;
+  const mod = modeloSelect.value;
+  if(mod) {
+    const years = unique(DATA
+      .filter(r => val(r, COLS.categoria) === cat && val(r, COLS.armadora) === arm && val(r, COLS.modelo) === mod)
+      .map(r => val(r, COLS.anio))
+      .filter(Boolean));
+    anioSelect.innerHTML += years.map(y => `<option value="${y}">${y}</option>`).join('');
+    anioSelect.disabled = false;
+  }
+}
+
+function onAnioChange() {
+  const cat = categoriaSelect.value;
+  const arm = armadoraSelect.value;
+  const mod = modeloSelect.value;
+  const year = anioSelect.value;
+  const r = DATA.find(i =>
+    val(i, COLS.categoria) === cat &&
+    val(i, COLS.armadora) === arm &&
+    val(i, COLS.modelo) === mod &&
+    val(i, COLS.anio) === year
+  );
+  if(r) {
+    resultadoDiv.innerHTML = `
+      <strong>Producto:</strong> ${val(r, COLS.producto)}<br>
+      <strong>Código:</strong> ${val(r, COLS.codigo)}<br>
+      <strong>Precio:</strong> ${val(r, COLS.precio)}<br>
+      <strong>Compatibilidad:</strong> ${val(r, COLS.armadora)} ${val(r, COLS.modelo)} ${val(r, COLS.anio)}
+    `;
+  } else {
+    resultadoDiv.textContent = "No se encontró información.";
+  }
+}
+
+categoriaSelect.addEventListener("change", onCategoriaChange);
+armadoraSelect.addEventListener("change", onArmadoraChange);
+modeloSelect.addEventListener("change", onModeloChange);
+anioSelect.addEventListener("change", onAnioChange);
+
+// Cargar data.json (debe estar en la raíz del repo)
+fetch('data.json')
+  .then(r => r.json())
+  .then(json => { DATA = json; fillCategorias(); })
+  .catch(err => {
+    console.error(err);
+    resultadoDiv.textContent = "No se pudo cargar data.json. Verifica que exista en el repositorio.";
+  });
 </script>
-
 </body>
 </html>
