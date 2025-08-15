@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (capas + parte, precio e inventario)</title>
+<title>Catálogo ACDelco (robusto: categoría vs descripción)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -50,7 +50,6 @@
 const FILE_URL = 'PRUEBAS.xlsx'; // cambia si tu archivo se llama distinto
 const SKIP = '— Saltar nivel (vacío) —';
 
-// Sinónimos tolerantes
 const CANDS = {
   categoria: [
     'categoria','categoría','categorias','categorías','cat','familia','familía','grupo','rubro','línea','linea'
@@ -62,13 +61,12 @@ const CANDS = {
     'submodelo','sub modelo','linea modelo','línea modelo','linea','línea','serie','version','versión'
   ],
   modelo: ['modelo','model','año','years','anio','año(s)'],
-  descripcion: ['descripcion','descripción','description','desc','detalle','detalles'],
+  descripcion: ['descripcion','descripción','description','desc','detalle','detalles','especificaciones'],
   precio: ['precio','price','$','costo','coste'],
   inventario: ['inventario','existencia','existencias','stock','disponibilidad'],
   part: ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
 };
 
-// Palabras típicas de categorías para heurística (fallback)
 const CATEGORY_HINTS = [
   'aceites','alternadores','amortiguadores','anticongelante','balatas','baleros','bandas',
   'baterías','baterias','bobinas','bujías','bujias','bombas de agua','clutches','cables de bujía','cables bujia',
@@ -78,6 +76,7 @@ const CATEGORY_HINTS = [
 function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/\s+/g,' ').trim();}
 function v(x){return (x==null?'':(''+x)).trim();}
 function uniq(a){return Array.from(new Set(a)).sort();}
+
 function toNumberLoose(s){
   const m = (s||'').toString().match(/-?\d+([.,]\d+)?/);
   if(m){ return parseFloat(m[0].replace(',','.')) }
@@ -92,16 +91,14 @@ function isOutOfStock(txt){
   return num===0;
 }
 
-// Fuzzy robusto: primero exacto, luego "contiene todas las palabras"
+// Fuzzy robusto
 function fuzzyPick(allKeys, synonyms){
   const kn = allKeys.map(k=>({orig:k, n:nrm(k)}));
-  // exacto
   for(const syn of synonyms){
     const ns = nrm(syn);
     const hit = kn.find(x => x.n === ns);
     if(hit) return hit.orig;
   }
-  // contiene todas las palabras
   for(const syn of synonyms){
     const words = nrm(syn).split(' ').filter(Boolean);
     const hit = kn.find(x => words.every(w => x.n.includes(w)));
@@ -110,6 +107,69 @@ function fuzzyPick(allKeys, synonyms){
   return null;
 }
 
+/* ===== Heurística para elegir Categoría y Descripción si hay confusión ===== */
+function columnStats(rows, col){
+  const vals = rows.map(r => v(r[col])).filter(x => x !== '');
+  const total = Math.max(1, vals.length);
+  const uniques = new Set(vals);
+  const uniqueCount = uniques.size;
+  const uniqueRatio = uniqueCount / total;      // categoría típica: ratio BAJO (se repite)
+  const avgLen = vals.reduce((a,s)=>a+s.length,0)/total; // descripción típica: más largo
+  // score para "parece categoría": menos únicos, textos cortos, presencia de hints
+  let hintScore = 0;
+  const stopAt = Math.min(400, vals.length);
+  for(let i=0;i<stopAt;i++){
+    const t = vals[i].toLowerCase();
+    if(CATEGORY_HINTS.some(h=>t.includes(h))) hintScore++;
+  }
+  return {uniqueRatio, avgLen, hintScore};
+}
+
+function pickCategoryAndDescription(allCols, rows, initial){
+  let {categoria, descripcion} = initial;
+  // Si ambos existen y NO son la misma, listo
+  if(categoria && descripcion && categoria !== descripcion){
+    return {categoria, descripcion};
+  }
+  // Calcula stats
+  const stats = {};
+  for(const col of allCols){
+    stats[col] = columnStats(rows, col);
+  }
+  // Elegir mejor candidato de Categoría:
+  //   - mayor hintScore
+  //   - menor uniqueRatio
+  //   - menor avgLen
+  const catCandidate = [...allCols].sort((a,b)=>{
+    const A=stats[a], B=stats[b];
+    if(B.hintScore !== A.hintScore) return B.hintScore - A.hintScore;
+    if(A.uniqueRatio !== B.uniqueRatio) return A.uniqueRatio - B.uniqueRatio;
+    return A.avgLen - B.avgLen;
+  })[0];
+
+  // Elegir mejor candidato de Descripción:
+  //   - mayor avgLen
+  //   - mayor uniqueRatio
+  //   - (no usar el mismo que la categoría)
+  const descCandidate = [...allCols].filter(c=>c!==catCandidate).sort((a,b)=>{
+    const A=stats[a], B=stats[b];
+    if(B.avgLen !== A.avgLen) return B.avgLen - A.avgLen;
+    return B.uniqueRatio - A.uniqueRatio;
+  })[0];
+
+  // Si no teníamos mapeo claro, usar candidatos
+  if(!categoria) categoria = catCandidate;
+  if(!descripcion || descripcion === categoria) descripcion = descCandidate;
+
+  // Regla final: si aún chocan, forzar desc = la de mayor avgLen distinta
+  if(descripcion === categoria){
+    const other = [...allCols].filter(c=>c!==categoria).sort((a,b)=>stats[b].avgLen - stats[a].avgLen)[0];
+    if(other) descripcion = other;
+  }
+  return {categoria, descripcion};
+}
+
+/* ===== Carga y mapeo ===== */
 let RAW=[], KEYS={}, FILTER_KEYS=[];
 const state={};
 
@@ -118,7 +178,7 @@ fetch(FILE_URL)
   .then(buf=>{
     const wb = XLSX.read(buf, {type:'array'});
     const ws = wb.Sheets[wb.SheetNames[0]];
-    RAW = XLSX.utils.sheet_to_json(ws); // fila 1 = headers
+    RAW = XLSX.utils.sheet_to_json(ws);
     init();
   })
   .catch(err=>{
@@ -126,45 +186,25 @@ fetch(FILE_URL)
     document.getElementById('status').textContent='No se pudo leer el Excel. ¿Está en la raíz y con el nombre correcto?';
   });
 
-// Detección con heurística extra para Categoría
 function mapKeysWithHeuristics(keys){
+  // 1) Fuzzy por sinónimos
   const out = {};
-  // 1) Intento normal con fuzzyPick
   for(const [target, syns] of Object.entries(CANDS)){
     out[target] = fuzzyPick(keys, syns);
   }
-  // 2) Si Categoría no se detectó, la inferimos buscando la columna con más "hits" de CATEGORY_HINTS
-  if(!out.categoria){
-    let bestCol = null, bestScore = -1;
-    for(const col of keys){
-      // ignorar columnas que ya se asignaron a otra cosa importante
-      if(Object.values(out).includes(col)) continue;
-      const values = RAW.slice(0, 500).map(r => v(r[col]).toLowerCase()); // mirar primeras 500 filas máx.
-      let score = 0;
-      for(const vv of values){
-        if(!vv) continue;
-        for(const hint of CATEGORY_HINTS){
-          if(vv.includes(hint)){ score++; break; }
-        }
-      }
-      if(score > bestScore){ bestScore = score; bestCol = col; }
-    }
-    if(bestScore > 0) out.categoria = bestCol;
-  }
-  // 3) Evitar que Descripción "pise" Categoría: si descripción quedó en la misma columna que categoría, anulamos descripción.
-  if(out.descripcion && out.categoria && out.descripcion === out.categoria){
-    out.descripcion = null;
-  }
+  // 2) Heurística si categoría/descripcion faltan o se pisan
+  const all = keys.slice(); // copia
+  const picked = pickCategoryAndDescription(all, RAW.slice(0, 1000), {categoria: out.categoria, descripcion: out.descripcion});
+  out.categoria = picked.categoria;
+  out.descripcion = picked.descripcion;
   return out;
 }
 
 function init(){
   const first = RAW[0] || {};
-  // recorta espacios invisibles en nombres de columnas
-  const all = Object.keys(first).map(k => k.replace(/^\s+|\s+$/g,''));
-  KEYS = mapKeysWithHeuristics(all);
+  const allCols = Object.keys(first).map(k => k.replace(/^\s+|\s+$/g,''));
+  KEYS = mapKeysWithHeuristics(allCols);
 
-  // Orden fijo y etiquetas profesionales
   const order = [
     {key:'categoria', label:'Categoría'},
     {key:'armadora',  label:'Armadora'},
@@ -191,16 +231,12 @@ function init(){
 
   document.getElementById('status').textContent='Selecciona filtros y pulsa "Buscar".';
 
-  // Diagnóstico opcional con ?debug=1
   const showDebug = new URLSearchParams(location.search).get('debug') === '1';
   if(showDebug){
-    const cats = KEYS.categoria ? uniq(RAW.map(r=>v(r[KEYS.categoria])).filter(Boolean)) : [];
     const diag = {
       filas: RAW.length,
       mapeo: KEYS,
-      filtrosDetectados: FILTER_KEYS.map(f=>f.label+' → '+f.col),
-      categoriasUnicas: cats.length,
-      ejemplosCategorias: cats.slice(0,20)
+      filtrosDetectados: FILTER_KEYS.map(f=>f.label+' → '+f.col)
     };
     const box = document.getElementById('diag');
     box.style.display = 'block';
@@ -208,6 +244,7 @@ function init(){
   }
 }
 
+/* ===== UI ===== */
 function buildFilters(){
   const c=document.getElementById('filters'); c.innerHTML='';
   FILTER_KEYS.forEach((fk,idx)=>{
@@ -267,6 +304,7 @@ function fillSelect(idx){
 
 function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
 
+/* ===== Render ===== */
 function render(rows){
   const out=document.getElementById('results');
   if(!rows.length){ out.innerHTML='<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
