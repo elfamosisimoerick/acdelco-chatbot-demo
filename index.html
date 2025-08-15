@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (capas, precio en resultado)</title>
+<title>Catálogo ACDelco (capas, precio y stock en resultado)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
@@ -40,10 +40,10 @@
 
 <script>
 /* ========= Config ========= */
-const FILE_URL = 'PRUEBAS.xlsx'; // Debe estar en la raíz del repo
+const FILE_URL = 'PRUEBAS.xlsx'; // Debe estar en la raíz del repo junto a index.html
 const SKIP = '— Saltar nivel (vacío) —';
 
-/* Columnas esperadas (A..H) con tolerancia a acentos/mayúsculas */
+/* Columnas esperadas (A..H) con tolerancia a acentos/mayús/minús */
 const CANDS = {
   categoria:['categoria','categoría'],
   armadora:['armadora'],
@@ -52,7 +52,7 @@ const CANDS = {
   modelo:['modelo'],
   descripcion:['descripcion','descripción','description'],
   precio:['precio','price'],
-  stock:['stock','existencia'] // no se usa para filtrar
+  stock:['stock','existencia'] // no filtra; solo se muestra al final
 };
 
 /* ========= Utilidades ========= */
@@ -61,7 +61,7 @@ function v(x){return (x==null?'':(''+x)).trim();}
 function uniq(a){return Array.from(new Set(a)).sort();}
 
 /* ========= Estado ========= */
-let RAW=[], KEYS={}, FILTER_KEYS=[], PRICE_KEY=null;
+let RAW=[], KEYS={}, FILTER_KEYS=[];
 const state={};
 
 /* ========= Carga del Excel ========= */
@@ -70,7 +70,7 @@ fetch(FILE_URL)
   .then(buf=>{
     const wb = XLSX.read(buf, {type:'array'});
     const ws = wb.Sheets[wb.SheetNames[0]];
-    RAW = XLSX.utils.sheet_to_json(ws); // usa fila 1 como encabezados
+    RAW = XLSX.utils.sheet_to_json(ws); // fila 1 = encabezados
     init();
   })
   .catch(err=>{
@@ -91,11 +91,12 @@ function mapKeys(keys){
 function init(){
   const first=RAW[0]||{}; const all=Object.keys(first);
   KEYS = mapKeys(all);
+
+  // Filtros: Categoría → Armadora → Marca → Submarca → Modelo → Descripción (si existe)
   FILTER_KEYS = [
     KEYS.categoria, KEYS.armadora, KEYS.marca,
     KEYS.submarca, KEYS.modelo, KEYS.descripcion
   ].filter(Boolean);
-  PRICE_KEY = KEYS.precio || null;
 
   buildFilters();
   refreshOptions();
@@ -123,12 +124,14 @@ function buildFilters(){
     const sel=block.querySelector('select');
     sel.addEventListener('change',()=>{
       state[idx]=sel.value;
+      // reset niveles siguientes
       for(let j=idx+1;j<FILTER_KEYS.length;j++){
         delete state[j];
         const s=document.getElementById('level_'+j);
         s.value=''; s.innerHTML='<option value="">Selecciona…</option>'; s.disabled=true;
       }
       refreshOptions();
+      // habilitar Buscar si hay al menos una selección
       document.getElementById('buscar').disabled = Object.values(state).every(x=>!x);
     });
   });
@@ -168,7 +171,7 @@ function fillSelect(idx){
 
 function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
 
-/* ========= Render de resultados ========= */
+/* ========= Render de resultados (PRECIO y STOCK reales) ========= */
 function render(rows){
   const out=document.getElementById('results');
   if(!rows.length){ out.innerHTML='<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
@@ -183,13 +186,14 @@ function render(rows){
     const subm  = v(r[KEYS.submarca]||'');
     const mod   = v(r[KEYS.modelo]||'');
     const desc  = v(r[KEYS.descripcion]||'');
-    const precio= PRICE_KEY ? v(r[PRICE_KEY]) : '—';
+    const precio= KEYS.precio ? v(r[KEYS.precio]) : '—';
+    const stock = KEYS.stock  ? v(r[KEYS.stock])  : '—';
     return `
       <div class="result">
         <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
         <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${mod}</div>
         <div><span class="badge">Precio</span> ${precio}</div>
-        <div class="muted">Demo (sin STOCK)</div>
+        <div><span class="badge">Stock</span> ${stock}</div>
       </div>
     `;
   }).join('') + (rows.length>MAX?`<div class="muted" style="margin-top:8px">Mostrando ${MAX} de ${rows.length} resultados. Afina filtros.</div>`:'');
