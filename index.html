@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (capas A→F, precio solo en resultado)</title>
+<title>Catálogo ACDelco (debug + precio solo en resultado)</title>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
   .wrap{max-width:960px;margin:0 auto;padding:20px}
@@ -19,11 +19,12 @@
   .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px}
   .badge{display:inline-block;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
   .muted{color:#94a3b8;font-size:13px}
+  .debug{background:#0b1220;border:1px dashed #475569;border-radius:12px;padding:14px;margin-top:12px;white-space:pre-wrap}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Catálogo ACDelco — Capas A→F (Precio solo en resultado)</h1>
+  <h1>Catálogo ACDelco — Capas (precio solo en resultado)</h1>
 
   <div class="card">
     <div id="filters" class="grid"></div>
@@ -32,217 +33,127 @@
       <button id="limpiar" type="button">Limpiar filtros</button>
     </div>
     <div id="status" class="muted" style="margin-top:10px"></div>
+    <div class="debug" id="debug">Diagnóstico…</div>
   </div>
 
   <div id="results"></div>
 </div>
 
 <script>
-// ===== 1) Cargar datos =====
-let RAW = [];
-fetch('data.json')
-  .then(r => r.json())
-  .then(json => { RAW = Array.isArray(json) ? json : []; init(); })
-  .catch(_ => document.getElementById('status').textContent = 'No se pudo cargar data.json.');
-
-// ===== 2) Detección robusta de columnas (con/sin acento, mayúsc/minúsc) =====
-const CANDIDATES = {
-  categoria:  ['categoria','categoría'],
-  armadora:   ['armadora'],
-  marca:      ['marca'],
-  submarca:   ['submarca','sub-marca'],
-  modelo:     ['modelo'],
+// Config de columnas (con/sin acento)
+const CANDS = {
+  categoria:['categoria','categoría'],
+  armadora:['armadora'],
+  marca:['marca'],
+  submarca:['submarca','sub-marca'],
+  modelo:['modelo'],
   descripcion:['descripcion','descripción','description'],
-  precio:     ['precio','price'],
-  stock:      ['stock','existencia']
+  precio:['precio','price'],
+  stock:['stock','existencia']
 };
+const SKIP = '— Saltar nivel (vacío) —';
+const state = {};
+let RAW=[], KEYS={}, FILTER_KEYS=[], PRICE_KEY=null;
 
-function normKey(s){
-  return (s||'')
-    .toString()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu,'')
-    .toLowerCase()
-    .trim();
-}
+fetch('data.json').then(r=>r.json()).then(json=>{ RAW = Array.isArray(json)?json:[]; init(); }).catch(()=>document.getElementById('status').textContent='No se pudo cargar data.json');
 
-function buildKeyMap(keys){
-  const nk = keys.map(k => ({orig:k, norm:normKey(k)}));
-  const map = {};
-  for (const [target, cands] of Object.entries(CANDIDATES)){
-    let found = null;
-    for (const cand of cands){
-      const nc = normKey(cand);
-      const hit = nk.find(x => x.norm === nc);
-      if (hit){ found = hit.orig; break; }
-    }
-    map[target] = found; // puede quedar null si no existe en JSON
+function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().trim();}
+function v(x){return (x==null?'':(''+x)).trim();}
+function uniq(a){return Array.from(new Set(a)).sort();}
+
+function mapKeys(keys){
+  const nk = keys.map(k=>({orig:k,n:nrm(k)}));
+  const out={};
+  for(const [t,opts] of Object.entries(CANDS)){
+    let f=null;
+    for(const o of opts){const no=nrm(o);const hit=nk.find(x=>x.n===no);if(hit){f=hit.orig;break;}}
+    out[t]=f;
   }
-  return map;
+  return out;
 }
 
-// ===== 3) Estado y utilidades =====
-const SKIP_LABEL = '— Saltar nivel (vacío) —';
-const state = {}; // selección por nivel
-
-let KEYS = {};         // mapeo real de nombres en tu JSON
-let FILTER_KEYS = [];  // columnas usadas como filtros (A..F)
-let PRICE_KEY = null;  // columna precio (no filtra)
-let STOCK_KEY = null;  // stock (ignorado)
-
-function v(x){ return (x==null ? '' : (''+x)).trim(); }
-function unique(list){ return Array.from(new Set(list)).sort(); }
-
-// ===== 4) Inicialización =====
 function init(){
-  const first = RAW[0] || {};
-  const allKeys = Object.keys(first);
-  KEYS = buildKeyMap(allKeys);
-
-  // Filtros = A..F (en este orden), si existen:
-  FILTER_KEYS = [
-    KEYS.categoria, KEYS.armadora, KEYS.marca,
-    KEYS.submarca, KEYS.modelo, KEYS.descripcion
-  ].filter(Boolean);
-
-  // Columnas auxiliares
+  const first=RAW[0]||{};
+  const allKeys=Object.keys(first);
+  KEYS = mapKeys(allKeys);
+  FILTER_KEYS = [KEYS.categoria,KEYS.armadora,KEYS.marca,KEYS.submarca,KEYS.modelo,KEYS.descripcion].filter(Boolean);
   PRICE_KEY = KEYS.precio || null;
-  STOCK_KEY = KEYS.stock  || null; // no se usa en demo
 
-  if (FILTER_KEYS.length === 0){
-    document.getElementById('status').textContent = 'No se encontraron columnas de filtros en data.json.';
-    return;
-  }
+  buildFilters(); refreshOptions(); wireBtns();
 
-  buildFilters();
-  refreshOptions();
-  wireButtons();
+  // === Diagnóstico en pantalla ===
+  const cats = uniq(RAW.map(r=>v(r[KEYS.categoria]||'')).filter(Boolean));
+  const dbg = [
+    `Filas totales: ${RAW.length}`,
+    `Encabezados detectados: ${JSON.stringify(KEYS, null, 2)}`,
+    `# Categorías únicas: ${cats.length}`,
+    `Ejemplos de categorías: ${cats.slice(0,20).join(', ')}`
+  ].join('\n');
+  document.getElementById('debug').textContent = dbg;
 }
 
-function wireButtons(){
-  const buscar = document.getElementById('buscar');
-  const limpiar = document.getElementById('limpiar');
-
-  buscar.addEventListener('click', () => {
-    const rows = filteredRows(FILTER_KEYS.length - 1);
-    renderResults(rows);
-  });
-
-  limpiar.addEventListener('click', () => {
-    for (let i=0;i<FILTER_KEYS.length;i++) delete state[i];
-    buildFilters();
-    refreshOptions();
-    renderResults([]); // limpio resultados hasta que den Buscar
-  });
+function wireBtns(){
+  const buscar=document.getElementById('buscar'), limpiar=document.getElementById('limpiar');
+  buscar.addEventListener('click',()=>{ const rows=filtered(FILTER_KEYS.length-1); render(rows); });
+  limpiar.addEventListener('click',()=>{ for(let i=0;i<FILTER_KEYS.length;i++) delete state[i]; buildFilters(); refreshOptions(); render([]); });
 }
 
-// ===== 5) Construcción de selects =====
 function buildFilters(){
-  const filters = document.getElementById('filters');
-  filters.innerHTML = '';
-  FILTER_KEYS.forEach((key, idx) => {
-    const id = 'level_'+idx;
-    const label = key;
-    const block = document.createElement('div');
-    block.innerHTML = `
-      <label>${label}</label>
-      <select id="${id}" ${idx>0?'disabled':''}>
-        <option value="">Selecciona…</option>
-      </select>
-    `;
-    filters.appendChild(block);
-    const sel = block.querySelector('select');
-    sel.addEventListener('change', () => {
-      state[idx] = sel.value;
-      // reset niveles siguientes
-      for (let j=idx+1; j<FILTER_KEYS.length; j++){
-        delete state[j];
-        const s = document.getElementById('level_'+j);
-        s.value = '';
-        s.innerHTML = '<option value="">Selecciona…</option>';
-        s.disabled = true;
-      }
-      refreshOptions();
-      // habilitar Buscar si al menos hay una selección
-      document.getElementById('buscar').disabled = Object.values(state).every(v => !v);
+  const c=document.getElementById('filters'); c.innerHTML='';
+  FILTER_KEYS.forEach((key,idx)=>{
+    const id='level_'+idx;
+    const block=document.createElement('div');
+    block.innerHTML=`<label>${key}</label><select id="${id}" ${idx>0?'disabled':''}><option value="">Selecciona…</option></select>`;
+    c.appendChild(block);
+    const sel=block.querySelector('select');
+    sel.addEventListener('change',()=>{
+      state[idx]=sel.value;
+      for(let j=idx+1;j<FILTER_KEYS.length;j++){ delete state[j]; const s=document.getElementById('level_'+j); s.value=''; s.innerHTML='<option value="">Selecciona…</option>'; s.disabled=true; }
+      refreshOptions(); document.getElementById('buscar').disabled = Object.values(state).every(v=>!v);
     });
   });
 }
 
-function filteredRows(uptoIdx){
-  return RAW.filter(r => {
-    for (let i=0; i<=uptoIdx; i++){
-      const key = FILTER_KEYS[i];
-      const chosen = state[i] || '';
-      const val = v(r[key]);
-      if (!chosen) continue;                 // sin filtro en ese nivel
-      if (chosen === SKIP_LABEL){            // saltar nivel: acepta vacíos
-        if (val !== '') return false;
-      } else {
-        if (val !== chosen) return false;
-      }
+function filtered(upto){
+  return RAW.filter(r=>{
+    for(let i=0;i<=upto;i++){
+      const key=FILTER_KEYS[i]; const chosen=state[i]||''; const val=v(r[key]);
+      if(!chosen) continue;
+      if(chosen===SKIP){ if(val!=='') return false; } else { if(val!==chosen) return false; }
     }
     return true;
   });
 }
 
 function fillSelect(idx){
-  const key = FILTER_KEYS[idx];
-  const sel = document.getElementById('level_'+idx);
-  const prevIdx = idx-1;
-  const base = prevIdx>=0 ? filteredRows(prevIdx) : RAW.slice();
-
-  const real = unique(base.map(r => v(r[key])).filter(Boolean));
-  const hasEmpty = base.some(r => v(r[key]) === '');
-
-  let opts = '<option value="">Selecciona…</option>';
-  if (hasEmpty) opts += `<option value="${SKIP_LABEL}">${SKIP_LABEL}</option>`;
-  opts += real.map(o => `<option value="${o}">${o}</option>`).join('');
-  sel.innerHTML = opts;
-
-  sel.disabled = (real.length === 0 && !hasEmpty && idx !== 0);
-  // re-seleccionar si aplica
-  if (state[idx] && (state[idx]===SKIP_LABEL || real.includes(state[idx]))){
-    sel.value = state[idx];
-    sel.disabled = false;
-  }
+  const key=FILTER_KEYS[idx], sel=document.getElementById('level_'+idx), base = idx>0? filtered(idx-1): RAW.slice();
+  const real=uniq(base.map(r=>v(r[key])).filter(Boolean)), hasEmpty=base.some(r=>v(r[key])==='');
+  let opts='<option value="">Selecciona…</option>';
+  if(hasEmpty) opts+=`<option value="${SKIP}">${SKIP}</option>`;
+  opts+=real.map(o=>`<option value="${o}">${o}</option>`).join('');
+  sel.innerHTML=opts; sel.disabled=(real.length===0 && !hasEmpty && idx!==0);
+  if(state[idx] && (state[idx]===SKIP || real.includes(state[idx]))){ sel.value=state[idx]; sel.disabled=false; }
 }
 
 function refreshOptions(){
-  FILTER_KEYS.forEach((_, idx) => fillSelect(idx));
-  // no mostramos resultados automáticamente
-  const count = filteredRows(FILTER_KEYS.length - 1).length;
-  document.getElementById('status').textContent = Object.values(state).some(v=>v)
-    ? `${count} posible(s) resultado(s). Pulsa "Buscar".`
-    : 'Selecciona filtros y luego pulsa "Buscar".';
+  FILTER_KEYS.forEach((_,i)=>fillSelect(i));
+  const count=filtered(FILTER_KEYS.length-1).length;
+  document.getElementById('status').textContent = Object.values(state).some(v=>v) ? `${count} posible(s) resultado(s). Pulsa "Buscar".` : 'Selecciona filtros y luego pulsa "Buscar".';
 }
 
-// ===== 6) Resultado final (PRECIO solo aquí) =====
-function renderResults(rows){
-  const out = document.getElementById('results');
-  if (!rows.length){ out.innerHTML = '<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
-
-  // Limitar a 200 tarjetas para no saturar
-  const MAX = 200;
-  const slice = rows.slice(0, MAX);
-
-  out.innerHTML = slice.map(r => {
-    const cat   = v(r[FILTER_KEYS[0]]) || '—';
-    const arm   = FILTER_KEYS[1] ? v(r[FILTER_KEYS[1]]) : '';
-    const marc  = KEYS.marca      ? v(r[KEYS.marca])     : '';
-    const subm  = KEYS.submarca   ? v(r[KEYS.submarca])  : '';
-    const model = KEYS.modelo     ? v(r[KEYS.modelo])    : '';
-    const desc  = KEYS.descripcion? v(r[KEYS.descripcion]): '';
-    const precio= PRICE_KEY       ? v(r[PRICE_KEY])      : '—';
-    return `
-      <div class="result">
-        <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
-        <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${model}</div>
-        <div><span class="badge">Precio</span> ${precio}</div>
-        <div class="muted">Refaccionaria El Pistón — demo (sin STOCK)</div>
-      </div>
-    `;
-  }).join('') + (rows.length > MAX ? `<div class="muted" style="margin-top:8px">Mostrando ${MAX} de ${rows.length} resultados. Afina filtros.</div>` : '');
+function render(rows){
+  const out=document.getElementById('results');
+  if(!rows.length){ out.innerHTML='<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
+  const MAX=200, slice=rows.slice(0,MAX);
+  out.innerHTML=slice.map(r=>{
+    const cat=v(r[KEYS.categoria]||''), arm=v(r[KEYS.armadora]||''), marc=v(r[KEYS.marca]||''), subm=v(r[KEYS.submarca]||''), mod=v(r[KEYS.modelo]||''), desc=v(r[KEYS.descripcion]||''), precio=PRICE_KEY?v(r[PRICE_KEY]):'—';
+    return `<div class="result">
+      <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
+      <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${mod}</div>
+      <div><span class="badge">Precio</span> ${precio}</div>
+      <div class="muted">Demo (sin STOCK)</div>
+    </div>`;
+  }).join('') + (rows.length>MAX?`<div class="muted" style="margin-top:8px">Mostrando ${MAX} de ${rows.length} resultados. Afina filtros.</div>`:'');
 }
 </script>
 </body>
