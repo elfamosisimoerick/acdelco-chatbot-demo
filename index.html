@@ -3,23 +3,30 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (capas, precio y stock en resultado)</title>
+<title>Catálogo ACDelco (capas + número de parte, precio e inventario)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
+  :root{
+    --bg:#0f172a; --text:#e2e8f0; --card:#111827; --stroke:#1f2937; --muted:#94a3b8; --accent:#2563eb;
+    --ok:#16a34a; /* verde */
+    --bad:#dc2626; /* rojo */
+  }
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:var(--bg);color:var(--text)}
   .wrap{max-width:960px;margin:0 auto;padding:20px}
   h1{font-size:20px;margin:12px 0 16px;color:#93c5fd}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
-  .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:16px;margin-bottom:16px}
-  label{display:block;font-size:12px;color:#94a3b8;margin-bottom:6px}
+  .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:16px;margin-bottom:16px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
   select{width:100%;padding:10px;background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:8px;outline:none}
   select:focus{border-color:#60a5fa}
   .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
-  button{padding:10px 14px;border-radius:8px;border:1px solid #334155;background:#2563eb;color:#fff;cursor:pointer}
+  button{padding:10px 14px;border-radius:8px;border:1px solid #334155;background:var(--accent);color:#fff;cursor:pointer}
   button:disabled{background:#334155;cursor:not-allowed}
   .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:12px}
   .badge{display:inline-block;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
-  .muted{color:#94a3b8;font-size:13px}
+  .muted{color:var(--muted);font-size:13px}
+  .inv-ok{color:var(--ok);font-weight:600}
+  .inv-bad{color:var(--bad);font-weight:600}
 </style>
 </head>
 <body>
@@ -40,10 +47,10 @@
 
 <script>
 /* ========= Config ========= */
-const FILE_URL = 'PRUEBAS.xlsx'; // Debe estar en la raíz del repo junto a index.html
+const FILE_URL = 'PRUEBAS.xlsx'; // Cambia aquí si tu archivo se llama distinto
 const SKIP = '— Saltar nivel (vacío) —';
 
-/* Columnas esperadas (A..H) con tolerancia a acentos/mayús/minús */
+/* Cabeceras esperadas + sinónimos (tolerante a acentos/mayús/minús) */
 const CANDS = {
   categoria:['categoria','categoría'],
   armadora:['armadora'],
@@ -52,13 +59,28 @@ const CANDS = {
   modelo:['modelo'],
   descripcion:['descripcion','descripción','description'],
   precio:['precio','price'],
-  stock:['stock','existencia'] // no filtra; solo se muestra al final
+  inventario:['inventario','existencia','existencias','stock'], // << usamos INVENTARIO
+  part:['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
 };
 
 /* ========= Utilidades ========= */
 function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().trim();}
 function v(x){return (x==null?'':(''+x)).trim();}
 function uniq(a){return Array.from(new Set(a)).sort();}
+function toNumberLoose(s){
+  // extrae primer número en el string; si no hay, intenta parseFloat
+  const m = (s||'').toString().match(/-?\d+([.,]\d+)?/);
+  if(m){ return parseFloat(m[0].replace(',','.')) }
+  const n = parseFloat((s||'').toString().replace(',','.'));
+  return isNaN(n) ? null : n;
+}
+function isOutOfStock(txt){
+  const t = v(txt).toLowerCase();
+  if(!t) return true;
+  if(/agotad|sin exist|no hay|no disponible|0(?!\d)/.test(t)) return true;
+  const num = toNumberLoose(t);
+  return num===0;
+}
 
 /* ========= Estado ========= */
 let RAW=[], KEYS={}, FILTER_KEYS=[];
@@ -75,7 +97,7 @@ fetch(FILE_URL)
   })
   .catch(err=>{
     console.error(err);
-    document.getElementById('status').textContent='No se pudo leer PRUEBAS.xlsx. ¿Está en la raíz y con ese nombre exacto?';
+    document.getElementById('status').textContent='No se pudo leer el Excel. ¿Está en la raíz y con el nombre correcto?';
   });
 
 /* ========= Detección de encabezados ========= */
@@ -92,7 +114,7 @@ function init(){
   const first=RAW[0]||{}; const all=Object.keys(first);
   KEYS = mapKeys(all);
 
-  // Filtros: Categoría → Armadora → Marca → Submarca → Modelo → Descripción (si existe)
+  // Filtros por capas: Categoría → Armadora → Marca → Submarca → Modelo → Descripción (si existe)
   FILTER_KEYS = [
     KEYS.categoria, KEYS.armadora, KEYS.marca,
     KEYS.submarca, KEYS.modelo, KEYS.descripcion
@@ -124,14 +146,12 @@ function buildFilters(){
     const sel=block.querySelector('select');
     sel.addEventListener('change',()=>{
       state[idx]=sel.value;
-      // reset niveles siguientes
       for(let j=idx+1;j<FILTER_KEYS.length;j++){
         delete state[j];
         const s=document.getElementById('level_'+j);
         s.value=''; s.innerHTML='<option value="">Selecciona…</option>'; s.disabled=true;
       }
       refreshOptions();
-      // habilitar Buscar si hay al menos una selección
       document.getElementById('buscar').disabled = Object.values(state).every(x=>!x);
     });
   });
@@ -171,7 +191,7 @@ function fillSelect(idx){
 
 function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
 
-/* ========= Render de resultados (PRECIO y STOCK reales) ========= */
+/* ========= Render de resultados ========= */
 function render(rows){
   const out=document.getElementById('results');
   if(!rows.length){ out.innerHTML='<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
@@ -187,13 +207,19 @@ function render(rows){
     const mod   = v(r[KEYS.modelo]||'');
     const desc  = v(r[KEYS.descripcion]||'');
     const precio= KEYS.precio ? v(r[KEYS.precio]) : '—';
-    const stock = KEYS.stock  ? v(r[KEYS.stock])  : '—';
+    const inv   = KEYS.inventario ? v(r[KEYS.inventario]) : ''; // INVENTARIO
+    const parte = KEYS.part ? v(r[KEYS.part]) : '';              // Número de parte
+
+    // clases de color para inventario
+    const invClass = isOutOfStock(inv) ? 'inv-bad' : 'inv-ok';
+
     return `
       <div class="result">
         <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
         <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${mod}</div>
+        ${parte ? `<div><span class="badge">N.º de parte</span> ${parte}</div>` : ``}
         <div><span class="badge">Precio</span> ${precio}</div>
-        <div><span class="badge">Stock</span> ${stock}</div>
+        ${inv ? `<div><span class="badge">Inventario</span> <span class="${invClass}">${inv}</span></div>` : ``}
       </div>
     `;
   }).join('') + (rows.length>MAX?`<div class="muted" style="margin-top:8px">Mostrando ${MAX} de ${rows.length} resultados. Afina filtros.</div>`:'');
