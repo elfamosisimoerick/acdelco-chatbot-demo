@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (agrupa por N.º de parte)</title>
+<title>Catálogo ACDelco (agrupa por N.º de parte + compatibilidad global)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -23,7 +23,7 @@
   button:disabled{background:#334155;cursor:not-allowed}
   .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:12px}
   .badge{display:inline-block;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
-  .muted{color:var(--muted);font-size:13px}
+  .muted{color:#94a3b8;font-size:13px}
   .inv-ok{color:var(--ok);font-weight:600}
   .inv-bad{color:var(--bad);font-weight:600}
   .diagnostic{background:#0b1220;border:1px dashed #475569;border-radius:12px;padding:10px;margin-top:10px;white-space:pre-wrap;display:none}
@@ -61,7 +61,7 @@ const CANDS = {
   descripcion:['descripcion','descripción','description','desc','detalle','detalles','especificaciones'],
   precio:    ['precio','price','$','costo','coste','precio publico','precio público','pvp','lista','precio lista','precio sugerido','precio sugerido público'],
   inventario:['inventario','existencia','existencias','stock','disponibilidad'],
-  part:      ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
+  part:      ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción','no parte','no parte'] // incluye NBSP
 };
 
 // === Utilidades de limpieza / normalización ===
@@ -323,9 +323,10 @@ function render(rows){
     const inv   = invCol ? v(first[invCol]) : '';
     const invClass = inv ? (isOutOfStock(inv) ? 'inv-bad' : 'inv-ok') : '';
 
-    // Compatibilidades únicas
+    // ✅ Compatibilidades únicas usando TODA la base RAW para ese N.º de parte
     const compatSet = new Set();
-    grp.rows.forEach(r=>{
+    const allRowsForPart = RAW.filter(rr => v(rr[parCol]) === part);
+    allRowsForPart.forEach(r=>{
       const arm  = armCol ? v(r[armCol]) : '';
       const marc = marCol ? v(r[marCol]) : '';
       const subm = subCol ? v(r[subCol]) : '';
@@ -335,13 +336,19 @@ function render(rows){
     });
     const compatList = Array.from(compatSet);
 
+    // Límite visual (ajusta o elimina si quieres todo)
+    const MAX_COMP = 50;
+    const shown = compatList.slice(0, MAX_COMP);
+    const extra = compatList.length - shown.length;
+
     CARDS.push(`
       <div class="result">
         <div><span class="badge">Producto</span> <strong>${desc || (cat || '')}</strong></div>
         <div><span class="badge">N.º de parte</span> ${part}</div>
         <div><span class="badge">Compatible con</span>
           <ul class="compat">
-            ${compatList.map(c=>`<li>${c}</li>`).join('')}
+            ${shown.map(c=>`<li>${c}</li>`).join('')}
+            ${extra>0 ? `<li class="muted">+${extra} más…</li>` : ``}
           </ul>
         </div>
         <div><span class="badge">Precio</span> ${precio}</div>
