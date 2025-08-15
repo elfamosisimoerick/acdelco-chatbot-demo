@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (robusto: categoría vs descripción)</title>
+<title>Catálogo ACDelco (precio fijo + cabeceras normalizadas)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -47,36 +47,24 @@
 </div>
 
 <script>
-const FILE_URL = 'PRUEBAS.xlsx'; // cambia si tu archivo se llama distinto
+const FILE_URL = 'PRUEBAS.xlsx';
 const SKIP = '— Saltar nivel (vacío) —';
 
 const CANDS = {
-  categoria: [
-    'categoria','categoría','categorias','categorías','cat','familia','familía','grupo','rubro','línea','linea'
-  ],
-  armadora: ['armadora','armador','fabricante','marca vehiculo','marca vehículo','oem'],
-  marca:    ['marca','brand'],
-  submarca: [
-    'submarca','sub-marca','sub marca','sub  marca','sub_marca','sub–marca','sub—marca',
-    'submodelo','sub modelo','linea modelo','línea modelo','linea','línea','serie','version','versión'
-  ],
-  modelo: ['modelo','model','año','years','anio','año(s)'],
-  descripcion: ['descripcion','descripción','description','desc','detalle','detalles','especificaciones'],
-  precio: ['precio','price','$','costo','coste'],
-  inventario: ['inventario','existencia','existencias','stock','disponibilidad'],
-  part: ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
+  categoria: ['categoria','categoría','categorias','categorías','cat','familia','familía','grupo','rubro','línea','linea'],
+  armadora:  ['armadora','armador','fabricante','marca vehiculo','marca vehículo','oem'],
+  marca:     ['marca','brand'],
+  submarca:  ['submarca','sub-marca','sub marca','sub  marca','sub_marca','sub–marca','sub—marca','submodelo','sub modelo','linea modelo','línea modelo','linea','línea','serie','version','versión'],
+  modelo:    ['modelo','model','año','years','anio','año(s)'],
+  descripcion:['descripcion','descripción','description','desc','detalle','detalles','especificaciones'],
+  precio:    ['precio','price','$','costo','coste'],
+  inventario:['inventario','existencia','existencias','stock','disponibilidad'],
+  part:      ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
 };
-
-const CATEGORY_HINTS = [
-  'aceites','alternadores','amortiguadores','anticongelante','balatas','baleros','bandas',
-  'baterías','baterias','bobinas','bujías','bujias','bombas de agua','clutches','cables de bujía','cables bujia',
-  'filtros','inyectores','sensores','empaques','pastillas','radiadores','tambores'
-].map(s => s.toLowerCase());
 
 function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/\s+/g,' ').trim();}
 function v(x){return (x==null?'':(''+x)).trim();}
 function uniq(a){return Array.from(new Set(a)).sort();}
-
 function toNumberLoose(s){
   const m = (s||'').toString().match(/-?\d+([.,]\d+)?/);
   if(m){ return parseFloat(m[0].replace(',','.')) }
@@ -90,8 +78,33 @@ function isOutOfStock(txt){
   const num = toNumberLoose(t);
   return num===0;
 }
+function fmtMoneyMX(s){
+  const n = toNumberLoose(s);
+  if(n==null) return v(s); // si no es número, muestra tal cual
+  try{
+    return new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN',maximumFractionDigits:2}).format(n);
+  }catch(e){ return n.toFixed(2); }
+}
 
-// Fuzzy robusto
+// Normaliza claves de CADA FILA (recorta espacios invisibles en headers dentro de los objetos)
+function normalizeRowKeys(rows){
+  if(!rows.length) return rows;
+  const firstKeys = Object.keys(rows[0]);
+  const keyMap = {};
+  for(const k of firstKeys){
+    keyMap[k] = k.replace(/^\s+|\s+$/g,''); // trim a ambos lados
+  }
+  return rows.map(r=>{
+    const o={};
+    for(const [k,val] of Object.entries(r)){
+      const kk = keyMap[k] || k.trim();
+      o[kk] = val;
+    }
+    return o;
+  });
+}
+
+// fuzzy picking de columnas
 function fuzzyPick(allKeys, synonyms){
   const kn = allKeys.map(k=>({orig:k, n:nrm(k)}));
   for(const syn of synonyms){
@@ -107,69 +120,6 @@ function fuzzyPick(allKeys, synonyms){
   return null;
 }
 
-/* ===== Heurística para elegir Categoría y Descripción si hay confusión ===== */
-function columnStats(rows, col){
-  const vals = rows.map(r => v(r[col])).filter(x => x !== '');
-  const total = Math.max(1, vals.length);
-  const uniques = new Set(vals);
-  const uniqueCount = uniques.size;
-  const uniqueRatio = uniqueCount / total;      // categoría típica: ratio BAJO (se repite)
-  const avgLen = vals.reduce((a,s)=>a+s.length,0)/total; // descripción típica: más largo
-  // score para "parece categoría": menos únicos, textos cortos, presencia de hints
-  let hintScore = 0;
-  const stopAt = Math.min(400, vals.length);
-  for(let i=0;i<stopAt;i++){
-    const t = vals[i].toLowerCase();
-    if(CATEGORY_HINTS.some(h=>t.includes(h))) hintScore++;
-  }
-  return {uniqueRatio, avgLen, hintScore};
-}
-
-function pickCategoryAndDescription(allCols, rows, initial){
-  let {categoria, descripcion} = initial;
-  // Si ambos existen y NO son la misma, listo
-  if(categoria && descripcion && categoria !== descripcion){
-    return {categoria, descripcion};
-  }
-  // Calcula stats
-  const stats = {};
-  for(const col of allCols){
-    stats[col] = columnStats(rows, col);
-  }
-  // Elegir mejor candidato de Categoría:
-  //   - mayor hintScore
-  //   - menor uniqueRatio
-  //   - menor avgLen
-  const catCandidate = [...allCols].sort((a,b)=>{
-    const A=stats[a], B=stats[b];
-    if(B.hintScore !== A.hintScore) return B.hintScore - A.hintScore;
-    if(A.uniqueRatio !== B.uniqueRatio) return A.uniqueRatio - B.uniqueRatio;
-    return A.avgLen - B.avgLen;
-  })[0];
-
-  // Elegir mejor candidato de Descripción:
-  //   - mayor avgLen
-  //   - mayor uniqueRatio
-  //   - (no usar el mismo que la categoría)
-  const descCandidate = [...allCols].filter(c=>c!==catCandidate).sort((a,b)=>{
-    const A=stats[a], B=stats[b];
-    if(B.avgLen !== A.avgLen) return B.avgLen - A.avgLen;
-    return B.uniqueRatio - A.uniqueRatio;
-  })[0];
-
-  // Si no teníamos mapeo claro, usar candidatos
-  if(!categoria) categoria = catCandidate;
-  if(!descripcion || descripcion === categoria) descripcion = descCandidate;
-
-  // Regla final: si aún chocan, forzar desc = la de mayor avgLen distinta
-  if(descripcion === categoria){
-    const other = [...allCols].filter(c=>c!==categoria).sort((a,b)=>stats[b].avgLen - stats[a].avgLen)[0];
-    if(other) descripcion = other;
-  }
-  return {categoria, descripcion};
-}
-
-/* ===== Carga y mapeo ===== */
 let RAW=[], KEYS={}, FILTER_KEYS=[];
 const state={};
 
@@ -178,7 +128,9 @@ fetch(FILE_URL)
   .then(buf=>{
     const wb = XLSX.read(buf, {type:'array'});
     const ws = wb.Sheets[wb.SheetNames[0]];
-    RAW = XLSX.utils.sheet_to_json(ws);
+    let rows = XLSX.utils.sheet_to_json(ws);
+    // 🔧 clave: normalizar cabeceras DENTRO de las filas
+    RAW = normalizeRowKeys(rows);
     init();
   })
   .catch(err=>{
@@ -186,24 +138,18 @@ fetch(FILE_URL)
     document.getElementById('status').textContent='No se pudo leer el Excel. ¿Está en la raíz y con el nombre correcto?';
   });
 
-function mapKeysWithHeuristics(keys){
-  // 1) Fuzzy por sinónimos
+function mapKeys(keys){
   const out = {};
   for(const [target, syns] of Object.entries(CANDS)){
     out[target] = fuzzyPick(keys, syns);
   }
-  // 2) Heurística si categoría/descripcion faltan o se pisan
-  const all = keys.slice(); // copia
-  const picked = pickCategoryAndDescription(all, RAW.slice(0, 1000), {categoria: out.categoria, descripcion: out.descripcion});
-  out.categoria = picked.categoria;
-  out.descripcion = picked.descripcion;
   return out;
 }
 
 function init(){
   const first = RAW[0] || {};
-  const allCols = Object.keys(first).map(k => k.replace(/^\s+|\s+$/g,''));
-  KEYS = mapKeysWithHeuristics(allCols);
+  const allCols = Object.keys(first); // ya vienen normalizadas
+  KEYS = mapKeys(allCols);
 
   const order = [
     {key:'categoria', label:'Categoría'},
@@ -231,20 +177,15 @@ function init(){
 
   document.getElementById('status').textContent='Selecciona filtros y pulsa "Buscar".';
 
+  // Diagnóstico opcional
   const showDebug = new URLSearchParams(location.search).get('debug') === '1';
   if(showDebug){
-    const diag = {
-      filas: RAW.length,
-      mapeo: KEYS,
-      filtrosDetectados: FILTER_KEYS.map(f=>f.label+' → '+f.col)
-    };
     const box = document.getElementById('diag');
     box.style.display = 'block';
-    box.textContent = JSON.stringify(diag, null, 2);
+    box.textContent = JSON.stringify({filas: RAW.length, mapeo: KEYS, filtrosDetectados: FILTER_KEYS.map(f=>f.label+' → '+f.col)}, null, 2);
   }
 }
 
-/* ===== UI ===== */
 function buildFilters(){
   const c=document.getElementById('filters'); c.innerHTML='';
   FILTER_KEYS.forEach((fk,idx)=>{
@@ -304,7 +245,6 @@ function fillSelect(idx){
 
 function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
 
-/* ===== Render ===== */
 function render(rows){
   const out=document.getElementById('results');
   if(!rows.length){ out.innerHTML='<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
@@ -321,7 +261,7 @@ function render(rows){
     const subm  = subCol ? v(r[subCol]) : '';
     const mod   = modCol ? v(r[modCol]) : '';
     const desc  = desCol ? v(r[desCol]) : '';
-    const precio= preCol ? v(r[preCol]) : '—';
+    const precio= preCol ? fmtMoneyMX(r[preCol]) : '—';
     const inv   = invCol ? v(r[invCol]) : '';
     const parte = parCol ? v(r[parCol]) : '';
 
