@@ -1,22 +1,152 @@
-[
-  {
-    "CATEGORÍA": "Alternadores",
-    "ARMADORA": "General Motors",
-    "MARCA": "Chevrolet",
-    "SUBMARCA": "Aveo",
-    "MODELO": "2008-2016",
-    "DESCRIPCIÓN": "12 V 95 A",
-    "PRECIO": "1",
-    "STOCK": "2 PIEZAS"
-  },
-  {
-    "CATEGORÍA": "Amortiguadores",
-    "ARMADORA": "General Motors",
-    "MARCA": "Chevrolet",
-    "SUBMARCA": "Spark",
-    "MODELO": "2010-2017",
-    "DESCRIPCIÓN": "Trasero",
-    "PRECIO": "2",
-    "STOCK": "3 PIEZAS"
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Catálogo ACDelco (A→H por columnas)</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
+  .wrap{max-width:960px;margin:0 auto;padding:20px}
+  h1{font-size:20px;margin:12px 0 16px;color:#93c5fd}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .card{background:#111827;border:1px solid #1f2937;border-radius:12px;padding:16px;margin-bottom:16px}
+  label{display:block;font-size:12px;color:#94a3b8;margin-bottom:6px}
+  select{width:100%;padding:10px;background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:8px;outline:none}
+  select:focus{border-color:#60a5fa}
+  .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px}
+  .badge{display:inline-block;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
+  .muted{color:#94a3b8;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Catálogo ACDelco — Navegación por columnas A→H</h1>
+
+  <div class="card">
+    <div id="filters" class="grid"></div>
+    <div id="status" class="muted" style="margin-top:10px"></div>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<script>
+// 1) Cargar datos del JSON en la raíz
+let DATA = [];
+fetch('data.json')
+  .then(r => r.json())
+  .then(json => { DATA = json; init(); })
+  .catch(err => {
+    console.error(err);
+    document.getElementById('status').textContent = 'No se pudo cargar data.json (¿está en la raíz del repo?).';
+  });
+
+// 2) Detectar columnas A..H y usar A..G como niveles (H = STOCK se ignora)
+let COLS = [];
+let LEVEL_KEYS = [];
+const EXCLUDE = new Set(['stock']); // ocultamos STOCK en el demo
+
+function init(){
+  if (!DATA.length) {
+    document.getElementById('status').textContent = 'No hay datos en data.json.';
+    return;
   }
-]
+  COLS = Object.keys(DATA[0]);        // Ej: ["CATEGORÍA","ARMADORA","MARCA","SUBMARCA","MODELO","DESCRIPCIÓN","PRECIO","STOCK"]
+  const first8 = COLS.slice(0, 8);    // A..H
+  LEVEL_KEYS = first8.filter(k => !EXCLUDE.has(k.toLowerCase())).slice(0, 7);
+
+  buildFilters();
+  updateOptions();
+}
+
+function unique(list){ return Array.from(new Set(list)).sort(); }
+function val(obj, key){ return (obj[key]||'').toString().trim(); }
+
+// 3) Construir selects
+const state = {};
+function buildFilters(){
+  const filters = document.getElementById('filters');
+  filters.innerHTML = '';
+  LEVEL_KEYS.forEach((key, idx) => {
+    const id = 'level_'+idx;
+    const block = document.createElement('div');
+    block.innerHTML = `
+      <label>${key}</label>
+      <select id="${id}" ${idx>0?'disabled':''}>
+        <option value="">Selecciona…</option>
+      </select>
+    `;
+    filters.appendChild(block);
+    const sel = block.querySelector('select');
+    sel.addEventListener('change', () => {
+      state[idx] = sel.value;
+      for (let j=idx+1; j<LEVEL_KEYS.length; j++){
+        delete state[j];
+        const s = document.getElementById('level_'+j);
+        s.value = '';
+        s.innerHTML = '<option value="">Selecciona…</option>';
+        s.disabled = true;
+      }
+      updateOptions();
+    });
+  });
+}
+
+// 4) Poblado de opciones y render
+function filteredRows(uptoIdx){
+  return DATA.filter(r => {
+    for (let i=0; i<=uptoIdx; i++){
+      const k = LEVEL_KEYS[i];
+      const chosen = state[i] || '';
+      if (chosen && val(r,k) !== chosen) return false;
+    }
+    return true;
+  });
+}
+
+function updateOptions(){
+  LEVEL_KEYS.forEach((k, idx) => {
+    const sel = document.getElementById('level_'+idx);
+    const prevIdx = idx-1;
+    const baseRows = prevIdx>=0 ? filteredRows(prevIdx) : DATA.slice();
+    const opts = unique(baseRows.map(r => val(r,k)).filter(Boolean));
+    sel.innerHTML = '<option value="">Selecciona…</option>' + opts.map(o => `<option value="${o}">${o}</option>`).join('');
+    if (state[idx] && opts.includes(state[idx])) {
+      sel.value = state[idx];
+      sel.disabled = false;
+    } else {
+      if (idx===0) sel.disabled = false;
+    }
+  });
+
+  const lastIdx = LEVEL_KEYS.length-1;
+  const rows = filteredRows(lastIdx);
+  renderResults(rows);
+  document.getElementById('status').textContent = rows.length ? `${rows.length} resultado(s)` : 'Selecciona filtros.';
+}
+
+function renderResults(rows){
+  const out = document.getElementById('results');
+  if (!rows.length){ out.innerHTML = ''; return; }
+
+  out.innerHTML = rows.map(r => {
+    const cat   = val(r, LEVEL_KEYS[0]) || '—';
+    const armd  = val(r, 'ARMADORA') || val(r, LEVEL_KEYS[1]) || '—';
+    const marca = val(r, 'MARCA') || '';
+    const subm  = val(r, 'SUBMARCA') || '';
+    const model = val(r, 'MODELO') || '';
+    const desc  = val(r, 'DESCRIPCIÓN') || '';
+    const price = val(r, 'PRECIO') || '—';
+    return `
+      <div class="result">
+        <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marca+' '+subm).trim()}</strong></div>
+        <div><span class="badge">Compatible con</span> ${armd} ${marca} ${subm} ${model}</div>
+        <div><span class="badge">Precio</span> ${price}</div>
+        <div class="muted">Refaccionaria El Pistón — demo (sin STOCK)</div>
+      </div>
+    `;
+  }).join('');
+}
+</script>
+</body>
+</html>
