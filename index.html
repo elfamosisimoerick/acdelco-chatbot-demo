@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (agrupa por N.º de parte + compatibilidad global)</title>
+<title>Catálogo ACDelco (compatibilidad ordenada)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
@@ -61,13 +61,13 @@ const CANDS = {
   descripcion:['descripcion','descripción','description','desc','detalle','detalles','especificaciones'],
   precio:    ['precio','price','$','costo','coste','precio publico','precio público','pvp','lista','precio lista','precio sugerido','precio sugerido público'],
   inventario:['inventario','existencia','existencias','stock','disponibilidad'],
-  part:      ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción','no parte','no parte'] // incluye NBSP
+  part:      ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción','no parte']
 };
 
-// === Utilidades de limpieza / normalización ===
+// Utilidades
 function cleanInvisibles(s){
   return (s||'').toString()
-    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g,' ') // zero-width & NBSP → espacio
+    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g,' ')
     .replace(/\s+/g,' ')
     .trim();
 }
@@ -79,9 +79,8 @@ function nrm(s){
 }
 function v(x){ return cleanInvisibles(x); }
 function uniq(a){ return Array.from(new Set(a)).sort(); }
-
 function toNumberLoose(s){
-  const t = (s||'').toString().replace(/[^\d.,-]/g,''); // deja dígitos/separadores
+  const t = (s||'').toString().replace(/[^\d.,-]/g,'');
   if(!t) return null;
   const m = t.match(/-?\d+(?:[.,]\d+)?/);
   if(!m) return null;
@@ -101,14 +100,18 @@ function isOutOfStock(txt){
   const num = toNumberLoose(t);
   return num===0;
 }
+function extractYears(text){
+  const t = v(text);
+  // patrones: 2008-2012, 2010/2015, 2011 – 2016, 2011 a 2016
+  const m = t.match(/\b(19|20)\d{2}\s*(?:[-–/a]\s*)(19|20)\d{2}\b/);
+  return m ? m[0].replace(/\s*a\s*/,'-').replace(/\s*–\s*/,'-').replace(/\s*\/\s*/,'-') : '';
+}
 
-// Normaliza claves dentro de cada fila
+// Normaliza claves por fila
 function normalizeRowKeys(rows){
   if(!rows.length) return rows;
   const keyMap = {};
-  for(const k of Object.keys(rows[0])){
-    keyMap[k] = cleanInvisibles(k);
-  }
+  for(const k of Object.keys(rows[0])) keyMap[k] = cleanInvisibles(k);
   return rows.map(r=>{
     const o={};
     for(const [k,val] of Object.entries(r)){
@@ -119,15 +122,15 @@ function normalizeRowKeys(rows){
   });
 }
 
-// Matching de columnas
+// Matching columnas
 function fuzzyPick(allKeys, synonyms){
   const kn = allKeys.map(k=>({orig:k, n:nrm(k)}));
-  for(const syn of synonyms){ // exacto
+  for(const syn of synonyms){
     const ns = nrm(syn);
     const hit = kn.find(x => x.n === ns);
     if(hit) return hit.orig;
   }
-  for(const syn of synonyms){ // contiene todas las palabras
+  for(const syn of synonyms){
     const words = nrm(syn).split(' ').filter(Boolean);
     const hit = kn.find(x => words.every(w => x.n.includes(w)));
     if(hit) return hit.orig;
@@ -143,8 +146,8 @@ fetch(FILE_URL)
   .then(buf=>{
     const wb = XLSX.read(buf, {type:'array'});
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws);  // fila 1 = headers
-    RAW = normalizeRowKeys(rows);               // limpia headers por fila
+    const rows = XLSX.utils.sheet_to_json(ws);
+    RAW = normalizeRowKeys(rows);
     init();
   })
   .catch(err=>{
@@ -162,7 +165,7 @@ function mapKeys(keys){
 
 function init(){
   const first = RAW[0] || {};
-  const allCols = Object.keys(first); // ya normalizadas
+  const allCols = Object.keys(first);
   KEYS = mapKeys(allCols);
 
   const order = [
@@ -189,7 +192,6 @@ function init(){
 
   document.getElementById('status').textContent='Selecciona filtros y pulsa "Buscar".';
 
-  // Diagnóstico opcional
   const showDebug = new URLSearchParams(location.search).get('debug') === '1';
   if(showDebug){
     const box = document.getElementById('diag');
@@ -211,7 +213,6 @@ function buildFilters(){
     const sel=block.querySelector('select');
     sel.addEventListener('change',()=>{
       state[idx]=sel.value;
-      // reset niveles siguientes
       for(let j=idx+1;j<FILTER_KEYS.length;j++){
         delete state[j];
         const s=document.getElementById('level_'+j);
@@ -261,7 +262,7 @@ function fillSelect(idx){
 
 function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
 
-/* ========= RENDER agrupando por N.º de parte ========= */
+/* ========= RENDER (agrupa por N.º de parte y compatibilidad ordenada) ========= */
 function render(rows){
   const out = document.getElementById('results');
   if(!rows.length){
@@ -272,7 +273,7 @@ function render(rows){
   const catCol = KEYS.categoria, armCol = KEYS.armadora, marCol = KEYS.marca, subCol = KEYS.submarca, modCol = KEYS.modelo, desCol = KEYS.descripcion;
   const preCol = KEYS.precio, invCol = KEYS.inventario, parCol = KEYS.part;
 
-  // Si NO hay columna de N.º de parte, render fila a fila
+  // Sin N.º de parte: clásico
   if(!parCol){
     const MAX=200, slice=rows.slice(0,MAX);
     out.innerHTML = slice.map(r=>{
@@ -285,10 +286,11 @@ function render(rows){
       const precio= preCol ? fmtMoneyMX(r[preCol]) : '—';
       const inv   = invCol ? v(r[invCol]) : '';
       const invClass = inv ? (isOutOfStock(inv) ? 'inv-bad' : 'inv-ok') : '';
+      const compat = [arm, marc, subm, mod].map(t=>t.trim()).filter(Boolean).join(' | ');
       return `
         <div class="result">
           <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
-          <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${mod}</div>
+          <div><span class="badge">Compatible con</span> ${compat}</div>
           <div><span class="badge">Precio</span> ${precio}</div>
           ${inv ? `<div><span class="badge">Inventario</span> <span class="${invClass}">${inv}</span></div>` : ``}
         </div>
@@ -297,9 +299,9 @@ function render(rows){
     return;
   }
 
-  // Agrupar por N.º de parte
-  const groups = new Map(); // part -> { rows:[], first: row }
-  const singles = [];       // sin número de parte
+  // Agrupar por N.º de parte en las filas ya filtradas
+  const groups = new Map();
+  const singles = [];
 
   rows.forEach(r=>{
     const part = v(r[parCol]);
@@ -323,21 +325,24 @@ function render(rows){
     const inv   = invCol ? v(first[invCol]) : '';
     const invClass = inv ? (isOutOfStock(inv) ? 'inv-bad' : 'inv-ok') : '';
 
-    // ✅ Compatibilidades únicas usando TODA la base RAW para ese N.º de parte
+    // Compatibilidad única usando TODA la base para ese N.º de parte
     const compatSet = new Set();
     const allRowsForPart = RAW.filter(rr => v(rr[parCol]) === part);
     allRowsForPart.forEach(r=>{
       const arm  = armCol ? v(r[armCol]) : '';
       const marc = marCol ? v(r[marCol]) : '';
       const subm = subCol ? v(r[subCol]) : '';
-      const mod  = modCol ? v(r[modCol]) : '';
-      const line = [arm, marc, subm, mod].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+      let  mod   = modCol ? v(r[modCol]) : '';
+      if(!mod){
+        const years = extractYears(desCol ? r[desCol] : '');
+        if(years) mod = years;
+      }
+      const line = [arm, marc, subm, mod].map(t=>t.trim()).filter(Boolean).join(' | ');
       if(line) compatSet.add(line);
     });
-    const compatList = Array.from(compatSet);
+    const compatList = Array.from(compatSet).sort((a,b)=>a.localeCompare(b,'es'));
 
-    // Límite visual (ajusta o elimina si quieres todo)
-    const MAX_COMP = 50;
+    const MAX_COMP = 80;
     const shown = compatList.slice(0, MAX_COMP);
     const extra = compatList.length - shown.length;
 
@@ -357,7 +362,7 @@ function render(rows){
     `);
   }
 
-  // Filas sin número de parte
+  // Filas sin número de parte (render clásico)
   singles.forEach(r=>{
     const cat   = catCol ? v(r[catCol]) : '';
     const arm   = armCol ? v(r[armCol]) : '';
@@ -368,10 +373,11 @@ function render(rows){
     const precio= preCol ? fmtMoneyMX(r[preCol]) : '—';
     const inv   = invCol ? v(r[invCol]) : '';
     const invClass = inv ? (isOutOfStock(inv) ? 'inv-bad' : 'inv-ok') : '';
+    const compat = [arm, marc, subm, mod].map(t=>t.trim()).filter(Boolean).join(' | ');
     CARDS.push(`
       <div class="result">
         <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
-        <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${mod}</div>
+        <div><span class="badge">Compatible con</span> ${compat}</div>
         <div><span class="badge">Precio</span> ${precio}</div>
         ${inv ? `<div><span class="badge">Inventario</span> <span class="${invClass}">${inv}</span></div>` : ``}
       </div>
