@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (debug + precio solo en resultado)</title>
+<title>Catálogo ACDelco (lee Excel directo)</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
   .wrap{max-width:960px;margin:0 auto;padding:20px}
@@ -24,13 +25,13 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Catálogo ACDelco — Capas (precio solo en resultado)</h1>
+  <h1>Catálogo ACDelco — leyendo Excel (A→F, precio solo en resultado)</h1>
 
   <div class="card">
     <div id="filters" class="grid"></div>
     <div class="row">
       <button id="buscar" disabled>Buscar</button>
-      <button id="limpiar" type="button">Limpiar filtros</button>
+      <button id="limpiar" type="button">Limpiar</button>
     </div>
     <div id="status" class="muted" style="margin-top:10px"></div>
     <div class="debug" id="debug">Diagnóstico…</div>
@@ -40,7 +41,8 @@
 </div>
 
 <script>
-// Config de columnas (con/sin acento)
+const FILE_URL = 'PRUEBAS.xlsx'; // súbelo a la raíz del repo
+const SKIP = '— Saltar nivel (vacío) —';
 const CANDS = {
   categoria:['categoria','categoría'],
   armadora:['armadora'],
@@ -51,51 +53,48 @@ const CANDS = {
   precio:['precio','price'],
   stock:['stock','existencia']
 };
-const SKIP = '— Saltar nivel (vacío) —';
-const state = {};
 let RAW=[], KEYS={}, FILTER_KEYS=[], PRICE_KEY=null;
+const state={};
 
-fetch('data.json').then(r=>r.json()).then(json=>{ RAW = Array.isArray(json)?json:[]; init(); }).catch(()=>document.getElementById('status').textContent='No se pudo cargar data.json');
+fetch(FILE_URL)
+  .then(r=>r.arrayBuffer())
+  .then(buf=>{
+    const wb = XLSX.read(buf, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    RAW = XLSX.utils.sheet_to_json(ws); // usa encabezados de la fila 1
+    init();
+  })
+  .catch(err=>{
+    console.error(err);
+    document.getElementById('status').textContent='No se pudo leer PRUEBAS.xlsx. ¿Está en la raíz?';
+  });
 
 function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().trim();}
 function v(x){return (x==null?'':(''+x)).trim();}
 function uniq(a){return Array.from(new Set(a)).sort();}
-
 function mapKeys(keys){
-  const nk = keys.map(k=>({orig:k,n:nrm(k)}));
-  const out={};
+  const nk=keys.map(k=>({orig:k,n:nrm(k)})); const out={};
   for(const [t,opts] of Object.entries(CANDS)){
-    let f=null;
-    for(const o of opts){const no=nrm(o);const hit=nk.find(x=>x.n===no);if(hit){f=hit.orig;break;}}
+    let f=null; for(const o of opts){const no=nrm(o); const hit=nk.find(x=>x.n===no); if(hit){f=hit.orig;break;}}
     out[t]=f;
-  }
-  return out;
+  } return out;
 }
 
 function init(){
-  const first=RAW[0]||{};
-  const allKeys=Object.keys(first);
-  KEYS = mapKeys(allKeys);
-  FILTER_KEYS = [KEYS.categoria,KEYS.armadora,KEYS.marca,KEYS.submarca,KEYS.modelo,KEYS.descripcion].filter(Boolean);
-  PRICE_KEY = KEYS.precio || null;
+  const first=RAW[0]||{}; const all=Object.keys(first);
+  KEYS=mapKeys(all);
+  FILTER_KEYS=[KEYS.categoria,KEYS.armadora,KEYS.marca,KEYS.submarca,KEYS.modelo,KEYS.descripcion].filter(Boolean);
+  PRICE_KEY=KEYS.precio||null;
 
-  buildFilters(); refreshOptions(); wireBtns();
+  buildFilters(); refreshOptions();
 
-  // === Diagnóstico en pantalla ===
-  const cats = uniq(RAW.map(r=>v(r[KEYS.categoria]||'')).filter(Boolean));
-  const dbg = [
-    `Filas totales: ${RAW.length}`,
-    `Encabezados detectados: ${JSON.stringify(KEYS, null, 2)}`,
-    `# Categorías únicas: ${cats.length}`,
-    `Ejemplos de categorías: ${cats.slice(0,20).join(', ')}`
-  ].join('\n');
-  document.getElementById('debug').textContent = dbg;
-}
+  // Diagnóstico
+  const cats=uniq(RAW.map(r=>v(r[KEYS.categoria]||'')).filter(Boolean));
+  document.getElementById('debug').textContent =
+    `Filas Excel: ${RAW.length}\nEncabezados: ${JSON.stringify(KEYS,null,2)}\n# Categorías: ${cats.length}\nEjemplos: ${cats.slice(0,20).join(', ')}`;
 
-function wireBtns(){
-  const buscar=document.getElementById('buscar'), limpiar=document.getElementById('limpiar');
-  buscar.addEventListener('click',()=>{ const rows=filtered(FILTER_KEYS.length-1); render(rows); });
-  limpiar.addEventListener('click',()=>{ for(let i=0;i<FILTER_KEYS.length;i++) delete state[i]; buildFilters(); refreshOptions(); render([]); });
+  document.getElementById('buscar').addEventListener('click',()=>render(filtered(FILTER_KEYS.length-1)));
+  document.getElementById('limpiar').addEventListener('click',()=>{ for(let i=0;i<FILTER_KEYS.length;i++) delete state[i]; buildFilters(); refreshOptions(); render([]); });
 }
 
 function buildFilters(){
@@ -109,7 +108,8 @@ function buildFilters(){
     sel.addEventListener('change',()=>{
       state[idx]=sel.value;
       for(let j=idx+1;j<FILTER_KEYS.length;j++){ delete state[j]; const s=document.getElementById('level_'+j); s.value=''; s.innerHTML='<option value="">Selecciona…</option>'; s.disabled=true; }
-      refreshOptions(); document.getElementById('buscar').disabled = Object.values(state).every(v=>!v);
+      refreshOptions();
+      document.getElementById('buscar').disabled = Object.values(state).every(v=>!v);
     });
   });
 }
@@ -117,16 +117,15 @@ function buildFilters(){
 function filtered(upto){
   return RAW.filter(r=>{
     for(let i=0;i<=upto;i++){
-      const key=FILTER_KEYS[i]; const chosen=state[i]||''; const val=v(r[key]);
+      const key=FILTER_KEYS[i], chosen=state[i]||'', val=v(r[key]);
       if(!chosen) continue;
       if(chosen===SKIP){ if(val!=='') return false; } else { if(val!==chosen) return false; }
-    }
-    return true;
+    } return true;
   });
 }
 
 function fillSelect(idx){
-  const key=FILTER_KEYS[idx], sel=document.getElementById('level_'+idx), base = idx>0? filtered(idx-1): RAW.slice();
+  const key=FILTER_KEYS[idx], sel=document.getElementById('level_'+idx), base=idx>0?filtered(idx-1):RAW.slice();
   const real=uniq(base.map(r=>v(r[key])).filter(Boolean)), hasEmpty=base.some(r=>v(r[key])==='');
   let opts='<option value="">Selecciona…</option>';
   if(hasEmpty) opts+=`<option value="${SKIP}">${SKIP}</option>`;
@@ -135,11 +134,7 @@ function fillSelect(idx){
   if(state[idx] && (state[idx]===SKIP || real.includes(state[idx]))){ sel.value=state[idx]; sel.disabled=false; }
 }
 
-function refreshOptions(){
-  FILTER_KEYS.forEach((_,i)=>fillSelect(i));
-  const count=filtered(FILTER_KEYS.length-1).length;
-  document.getElementById('status').textContent = Object.values(state).some(v=>v) ? `${count} posible(s) resultado(s). Pulsa "Buscar".` : 'Selecciona filtros y luego pulsa "Buscar".';
-}
+function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); document.getElementById('status').textContent='Selecciona filtros y pulsa "Buscar".'; }
 
 function render(rows){
   const out=document.getElementById('results');
