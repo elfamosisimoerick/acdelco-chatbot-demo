@@ -1,4 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Catálogo ACDelco (agrupa por N.º de parte)</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#0f172a; --text:#e2e8f0; --card:#111827; --stroke:#1f2937; --muted:#94a3b8; --accent:#2563eb;
+    --ok:#16a34a; --bad:#dc2626;
+  }
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:var(--bg);color:var(--text)}
+  .wrap{max-width:1100px;margin:0 auto;padding:20px}
+  h1{font-size:20px;margin:12px 0 16px;color:#93c5fd}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+  .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:16px;margin-bottom:16px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  select{width:100%;padding:10px;background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:8px;outline:none}
+  select:focus{border-color:#60a5fa}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  button{padding:10px 14px;border-radius:8px;border:1px solid #334155;background:var(--accent);color:#fff;cursor:pointer}
+  button:disabled{background:#334155;cursor:not-allowed}
+  .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:12px}
+  .badge{display:inline-block;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
+  .muted{color:var(--muted);font-size:13px}
+  .inv-ok{color:var(--ok);font-weight:600}
+  .inv-bad{color:var(--bad);font-weight:600}
+  .diagnostic{background:#0b1220;border:1px dashed #475569;border-radius:12px;padding:10px;margin-top:10px;white-space:pre-wrap;display:none}
+  ul.compat{margin:6px 0 0 0; padding-left:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Catálogo ACDelco — por capas</h1>
+
+  <div class="card">
+    <div id="filters" class="grid"></div>
+    <div class="row">
+      <button id="buscar" disabled>Buscar</button>
+      <button id="limpiar" type="button">Limpiar</button>
+    </div>
+    <div id="status" class="muted" style="margin-top:10px"></div>
+    <div id="diag" class="diagnostic"></div>
+  </div>
+
+  <div id="results"></div>
+</div>
+
 <script>
+const FILE_URL = 'PRUEBAS.xlsx'; // cambia si tu archivo se llama distinto
+const SKIP = '— Saltar nivel (vacío) —';
+
+// Sinónimos tolerantes
+const CANDS = {
+  categoria: ['categoria','categoría','categorias','categorías','cat','familia','familía','grupo','rubro','línea','linea'],
+  armadora:  ['armadora','armador','fabricante','marca vehiculo','marca vehículo','oem'],
+  marca:     ['marca','brand'],
+  submarca:  ['submarca','sub-marca','sub marca','sub  marca','sub_marca','sub–marca','sub—marca','submodelo','sub modelo','linea modelo','línea modelo','linea','línea','serie','version','versión'],
+  modelo:    ['modelo','model','año','years','anio','año(s)'],
+  descripcion:['descripcion','descripción','description','desc','detalle','detalles','especificaciones'],
+  precio:    ['precio','price','$','costo','coste','precio publico','precio público','pvp','lista','precio lista','precio sugerido','precio sugerido público'],
+  inventario:['inventario','existencia','existencias','stock','disponibilidad'],
+  part:      ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
+};
+
+// === Utilidades de limpieza / normalización ===
+function cleanInvisibles(s){
+  return (s||'').toString()
+    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g,' ') // zero-width & NBSP → espacio
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function nrm(s){
+  return cleanInvisibles(s)
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu,'')
+    .toLowerCase();
+}
+function v(x){ return cleanInvisibles(x); }
+function uniq(a){ return Array.from(new Set(a)).sort(); }
+
+function toNumberLoose(s){
+  const t = (s||'').toString().replace(/[^\d.,-]/g,''); // deja dígitos/separadores
+  if(!t) return null;
+  const m = t.match(/-?\d+(?:[.,]\d+)?/);
+  if(!m) return null;
+  return parseFloat(m[0].replace(',','.'));
+}
+function fmtMoneyMX(s){
+  const n = toNumberLoose(s);
+  if(n==null) return v(s);
+  try{
+    return new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN',maximumFractionDigits:2}).format(n);
+  }catch(e){ return n.toFixed(2); }
+}
+function isOutOfStock(txt){
+  const t = v(txt).toLowerCase();
+  if(!t) return true;
+  if(/agotad|sin exist|no hay|no disponible|0(?!\d)/.test(t)) return true;
+  const num = toNumberLoose(t);
+  return num===0;
+}
+
+// Normaliza claves dentro de cada fila
+function normalizeRowKeys(rows){
+  if(!rows.length) return rows;
+  const keyMap = {};
+  for(const k of Object.keys(rows[0])){
+    keyMap[k] = cleanInvisibles(k);
+  }
+  return rows.map(r=>{
+    const o={};
+    for(const [k,val] of Object.entries(r)){
+      const kk = keyMap[k] || cleanInvisibles(k);
+      o[kk] = val;
+    }
+    return o;
+  });
+}
+
+// Matching de columnas
+function fuzzyPick(allKeys, synonyms){
+  const kn = allKeys.map(k=>({orig:k, n:nrm(k)}));
+  for(const syn of synonyms){ // exacto
+    const ns = nrm(syn);
+    const hit = kn.find(x => x.n === ns);
+    if(hit) return hit.orig;
+  }
+  for(const syn of synonyms){ // contiene todas las palabras
+    const words = nrm(syn).split(' ').filter(Boolean);
+    const hit = kn.find(x => words.every(w => x.n.includes(w)));
+    if(hit) return hit.orig;
+  }
+  return null;
+}
+
+let RAW=[], KEYS={}, FILTER_KEYS=[];
+const state={};
+
+fetch(FILE_URL)
+  .then(r=>r.arrayBuffer())
+  .then(buf=>{
+    const wb = XLSX.read(buf, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws);  // fila 1 = headers
+    RAW = normalizeRowKeys(rows);               // limpia headers por fila
+    init();
+  })
+  .catch(err=>{
+    console.error(err);
+    document.getElementById('status').textContent='No se pudo leer el Excel. ¿Está en la raíz y con el nombre correcto?';
+  });
+
+function mapKeys(keys){
+  const out = {};
+  for(const [target, syns] of Object.entries(CANDS)){
+    out[target] = fuzzyPick(keys, syns);
+  }
+  return out;
+}
+
+function init(){
+  const first = RAW[0] || {};
+  const allCols = Object.keys(first); // ya normalizadas
+  KEYS = mapKeys(allCols);
+
+  const order = [
+    {key:'categoria', label:'Categoría'},
+    {key:'armadora',  label:'Armadora'},
+    {key:'marca',     label:'Marca'},
+    {key:'submarca',  label:'Submarca'},
+    {key:'modelo',    label:'Modelo'},
+    {key:'descripcion',label:'Descripción'}
+  ];
+  FILTER_KEYS = order.map(o => ({label:o.label, col: KEYS[o.key]})).filter(o => !!o.col);
+
+  buildFilters();
+  refreshOptions();
+
+  document.getElementById('buscar').addEventListener('click',()=>{
+    const rows=filtered(FILTER_KEYS.length-1);
+    render(rows);
+  });
+  document.getElementById('limpiar').addEventListener('click',()=>{
+    for(let i=0;i<FILTER_KEYS.length;i++) delete state[i];
+    buildFilters(); refreshOptions(); render([]);
+  });
+
+  document.getElementById('status').textContent='Selecciona filtros y pulsa "Buscar".';
+
+  // Diagnóstico opcional
+  const showDebug = new URLSearchParams(location.search).get('debug') === '1';
+  if(showDebug){
+    const box = document.getElementById('diag');
+    box.style.display = 'block';
+    box.textContent = JSON.stringify(
+      {filas: RAW.length, mapeo: KEYS, filtrosDetectados: FILTER_KEYS.map(f=>f.label+' → '+f.col)},
+      null, 2
+    );
+  }
+}
+
+function buildFilters(){
+  const c=document.getElementById('filters'); c.innerHTML='';
+  FILTER_KEYS.forEach((fk,idx)=>{
+    const id='level_'+idx;
+    const block=document.createElement('div');
+    block.innerHTML=`<label>${fk.label}</label><select id="${id}" ${idx>0?'disabled':''}><option value="">Selecciona…</option></select>`;
+    c.appendChild(block);
+    const sel=block.querySelector('select');
+    sel.addEventListener('change',()=>{
+      state[idx]=sel.value;
+      // reset niveles siguientes
+      for(let j=idx+1;j<FILTER_KEYS.length;j++){
+        delete state[j];
+        const s=document.getElementById('level_'+j);
+        s.value=''; s.innerHTML='<option value="">Selecciona…</option>'; s.disabled=true;
+      }
+      refreshOptions();
+      document.getElementById('buscar').disabled = Object.values(state).every(x=>!x);
+    });
+  });
+}
+
+function filtered(upto){
+  return RAW.filter(r=>{
+    for(let i=0;i<=upto;i++){
+      const col=FILTER_KEYS[i].col, chosen=state[i]||'', val=v(r[col]);
+      if(!chosen) continue;
+      if(chosen===SKIP){ if(val!=='') return false; }
+      else { if(val!==chosen) return false; }
+    }
+    return true;
+  });
+}
+
+function uniqSortedValues(rows, col){
+  const arr = rows.map(r => v(r[col]));
+  return Array.from(new Set(arr.filter(Boolean))).sort();
+}
+
+function fillSelect(idx){
+  const col=FILTER_KEYS[idx].col;
+  const sel=document.getElementById('level_'+idx);
+  const base = idx>0 ? filtered(idx-1) : RAW.slice();
+
+  const real=uniqSortedValues(base, col);
+  const hasEmpty = base.some(r=>v(r[col])==='');
+
+  let opts = '<option value="">Selecciona…</option>';
+  if(hasEmpty) opts += `<option value="${SKIP}">${SKIP}</option>`;
+  opts += real.map(o=>`<option value="${o}">${o}</option>`).join('');
+  sel.innerHTML = opts;
+
+  sel.disabled = (real.length===0 && !hasEmpty && idx!==0);
+  if(state[idx] && (state[idx]===SKIP || real.includes(state[idx]))){
+    sel.value = state[idx]; sel.disabled=false;
+  }
+}
+
+function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
+
+/* ========= RENDER agrupando por N.º de parte ========= */
 function render(rows){
   const out = document.getElementById('results');
   if(!rows.length){
@@ -6,11 +269,10 @@ function render(rows){
     return;
   }
 
-  // Columnas relevantes (ya mapeadas en tu código actual)
   const catCol = KEYS.categoria, armCol = KEYS.armadora, marCol = KEYS.marca, subCol = KEYS.submarca, modCol = KEYS.modelo, desCol = KEYS.descripcion;
   const preCol = KEYS.precio, invCol = KEYS.inventario, parCol = KEYS.part;
 
-  // Si no tenemos columna de Número de parte, render tradicional (una tarjeta por fila)
+  // Si NO hay columna de N.º de parte, render fila a fila
   if(!parCol){
     const MAX=200, slice=rows.slice(0,MAX);
     out.innerHTML = slice.map(r=>{
@@ -35,20 +297,19 @@ function render(rows){
     return;
   }
 
-  // ====== Agrupación por Número de parte ======
-  const groups = new Map();   // part -> { rows:[], first:row }
-  const noPartRows = [];      // filas sin número de parte (se renderizan individualmente)
+  // Agrupar por N.º de parte
+  const groups = new Map(); // part -> { rows:[], first: row }
+  const singles = [];       // sin número de parte
 
   rows.forEach(r=>{
     const part = v(r[parCol]);
-    if(!part){ noPartRows.push(r); return; }
+    if(!part){ singles.push(r); return; }
     if(!groups.has(part)) groups.set(part, { rows: [], first: r });
     groups.get(part).rows.push(r);
   });
 
-  // Construye tarjetas por grupo
   const CARDS = [];
-  const MAX_GROUPS = 200; // seguridad para no saturar UI
+  const MAX_GROUPS = 200;
   let count = 0;
 
   for(const [part, grp] of groups.entries()){
@@ -56,15 +317,13 @@ function render(rows){
     count++;
 
     const first = grp.first;
-
-    // Datos base del grupo: tomamos del primer renglón
     const cat   = catCol ? v(first[catCol]) : '';
     const desc  = desCol ? v(first[desCol]) : '';
     const precio= preCol ? fmtMoneyMX(first[preCol]) : '—';
     const inv   = invCol ? v(first[invCol]) : '';
     const invClass = inv ? (isOutOfStock(inv) ? 'inv-bad' : 'inv-ok') : '';
 
-    // Lista de compatibilidades (dedup armadora+marca+submarca+modelo)
+    // Compatibilidades únicas
     const compatSet = new Set();
     grp.rows.forEach(r=>{
       const arm  = armCol ? v(r[armCol]) : '';
@@ -74,33 +333,25 @@ function render(rows){
       const line = [arm, marc, subm, mod].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
       if(line) compatSet.add(line);
     });
-
-    // Para no hacer la tarjeta infinita: mostramos hasta 12 y luego “+N más”
     const compatList = Array.from(compatSet);
-    const MAX_COMP = 12;
-    const shown = compatList.slice(0, MAX_COMP);
-    const extra = compatList.length - shown.length;
-
-    const compatHTML = `
-      <ul style="margin:6px 0 0 0; padding-left:18px;">
-        ${shown.map(c=>`<li>${c}</li>`).join('')}
-        ${extra>0 ? `<li class="muted">+${extra} más…</li>` : ``}
-      </ul>
-    `;
 
     CARDS.push(`
       <div class="result">
         <div><span class="badge">Producto</span> <strong>${desc || (cat || '')}</strong></div>
         <div><span class="badge">N.º de parte</span> ${part}</div>
-        <div><span class="badge">Compatible con</span> ${compatHTML}</div>
+        <div><span class="badge">Compatible con</span>
+          <ul class="compat">
+            ${compatList.map(c=>`<li>${c}</li>`).join('')}
+          </ul>
+        </div>
         <div><span class="badge">Precio</span> ${precio}</div>
         ${inv ? `<div><span class="badge">Inventario</span> <span class="${invClass}">${inv}</span></div>` : ``}
       </div>
     `);
   }
 
-  // Filas sin número de parte: render tradicional
-  noPartRows.forEach(r=>{
+  // Filas sin número de parte
+  singles.forEach(r=>{
     const cat   = catCol ? v(r[catCol]) : '';
     const arm   = armCol ? v(r[armCol]) : '';
     const marc  = marCol ? v(r[marCol]) : '';
@@ -123,3 +374,5 @@ function render(rows){
   out.innerHTML = CARDS.join('');
 }
 </script>
+</body>
+</html>
