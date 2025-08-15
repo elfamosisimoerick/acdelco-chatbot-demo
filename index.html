@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (A→H por columnas)</title>
+<title>Catálogo ACDelco (A→H)</title>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
   .wrap{max-width:960px;margin:0 auto;padding:20px}
@@ -20,7 +20,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Catálogo ACDelco — Navegación por columnas A→H</h1>
+  <h1>Catálogo ACDelco — Capas A→H (con opción de saltar vacíos)</h1>
 
   <div class="card">
     <div id="filters" class="grid"></div>
@@ -31,43 +31,47 @@
 </div>
 
 <script>
-// 1) Cargar datos del JSON en la raíz
+// Encabezados EXACTOS por columnas A..H
+const HEADERS = ["CATEGORÍA","ARMADORA","MARCA","SUBMARCA","MODELO","DESCRIPCIÓN","PRECIO","STOCK"];
+const USE_LEVELS = HEADERS.slice(0,7); // A..G como filtros
+const EXCLUDE_FROM_FILTER = new Set(["STOCK"]); // H se oculta
+const SKIP_LABEL = "— Saltar nivel (vacío) —";
+
 let DATA = [];
 fetch('data.json')
   .then(r => r.json())
-  .then(json => { DATA = json; init(); })
+  .then(json => { DATA = normalize(json); init(); })
   .catch(err => {
     console.error(err);
-    document.getElementById('status').textContent = 'No se pudo cargar data.json (¿está en la raíz del repo?).';
+    document.getElementById('status').textContent = 'No se pudo cargar data.json.';
   });
 
-// 2) Detectar columnas A..H y usar A..G como niveles (H = STOCK se ignora)
-let COLS = [];
-let LEVEL_KEYS = [];
-const EXCLUDE = new Set(['stock']); // ocultamos STOCK en el demo
+// normaliza: a string + trim
+function v(x){ return (x == null ? "" : (""+x)).trim(); }
+function normalize(rows){
+  return rows.map(r => {
+    const nr = {};
+    HEADERS.forEach(h => nr[h] = v(r[h]));
+    return nr;
+  });
+}
 
+const state = {}; // selección por nivel
 function init(){
-  if (!DATA.length) {
-    document.getElementById('status').textContent = 'No hay datos en data.json.';
+  // Validar que existan headers esperados
+  const missing = HEADERS.filter(h => !(h in (DATA[0]||{})));
+  if(missing.length){
+    document.getElementById('status').textContent = "Faltan columnas: " + missing.join(", ");
     return;
   }
-  COLS = Object.keys(DATA[0]);        // ["CATEGORÍA","ARMADORA","MARCA","SUBMARCA","MODELO","DESCRIPCIÓN","PRECIO","STOCK"]
-  const first8 = COLS.slice(0, 8);    // A..H
-  LEVEL_KEYS = first8.filter(k => !EXCLUDE.has(k.toLowerCase())).slice(0, 7);
-
   buildFilters();
   updateOptions();
 }
 
-function unique(list){ return Array.from(new Set(list)).sort(); }
-function val(obj, key){ return (obj[key]||'').toString().trim(); }
-
-// 3) Construir selects
-const state = {};
 function buildFilters(){
   const filters = document.getElementById('filters');
   filters.innerHTML = '';
-  LEVEL_KEYS.forEach((key, idx) => {
+  USE_LEVELS.forEach((key, idx) => {
     const id = 'level_'+idx;
     const block = document.createElement('div');
     block.innerHTML = `
@@ -80,7 +84,7 @@ function buildFilters(){
     const sel = block.querySelector('select');
     sel.addEventListener('change', () => {
       state[idx] = sel.value;
-      for (let j=idx+1; j<LEVEL_KEYS.length; j++){
+      for(let j=idx+1;j<USE_LEVELS.length;j++){
         delete state[j];
         const s = document.getElementById('level_'+j);
         s.value = '';
@@ -92,51 +96,65 @@ function buildFilters(){
   });
 }
 
-// 4) Poblado de opciones y render
+function unique(list){ return Array.from(new Set(list)).sort(); }
+
 function filteredRows(uptoIdx){
   return DATA.filter(r => {
-    for (let i=0; i<=uptoIdx; i++){
-      const k = LEVEL_KEYS[i];
+    for(let i=0;i<=uptoIdx;i++){
+      const k = USE_LEVELS[i];
       const chosen = state[i] || '';
-      if (chosen && val(r,k) !== chosen) return false;
+      if(!chosen) continue;
+      if(chosen === SKIP_LABEL){
+        // si usuario "salta" el nivel, aceptamos vacío aquí
+        if(r[k] !== '') return false;
+      }else{
+        if(r[k] !== chosen) return false;
+      }
     }
     return true;
   });
 }
 
-function updateOptions(){
-  LEVEL_KEYS.forEach((k, idx) => {
-    const sel = document.getElementById('level_'+idx);
-    const prevIdx = idx-1;
-    const baseRows = prevIdx>=0 ? filteredRows(prevIdx) : DATA.slice();
-    const opts = unique(baseRows.map(r => val(r,k)).filter(Boolean));
-    sel.innerHTML = '<option value="">Selecciona…</option>' + opts.map(o => `<option value="${o}">${o}</option>`).join('');
-    if (state[idx] && opts.includes(state[idx])) {
-      sel.value = state[idx];
-      sel.disabled = false;
-    } else {
-      if (idx===0) sel.disabled = false;
-    }
-  });
+function fillSelect(idx){
+  const key = USE_LEVELS[idx];
+  const sel = document.getElementById('level_'+idx);
+  const prevIdx = idx-1;
+  const base = prevIdx>=0 ? filteredRows(prevIdx) : DATA.slice();
 
-  const lastIdx = LEVEL_KEYS.length-1;
-  const rows = filteredRows(lastIdx);
+  // opciones reales no vacías
+  const real = unique(base.map(r => r[key]).filter(Boolean));
+  // si hay filas con vacío en este nivel, permitimos "saltar"
+  const hasEmpty = base.some(r => r[key] === '');
+
+  let opts = '<option value="">Selecciona…</option>';
+  if(hasEmpty) opts += `<option value="${SKIP_LABEL}">${SKIP_LABEL}</option>`;
+  opts += real.map(o => `<option value="${o}">${o}</option>`).join('');
+  sel.innerHTML = opts;
+
+  // habilitar si hay algo que elegir
+  sel.disabled = (real.length === 0 && !hasEmpty && idx !== 0);
+}
+
+function updateOptions(){
+  USE_LEVELS.forEach((_, idx) => fillSelect(idx));
+
+  const rows = filteredRows(USE_LEVELS.length-1);
   renderResults(rows);
   document.getElementById('status').textContent = rows.length ? `${rows.length} resultado(s)` : 'Selecciona filtros.';
 }
 
 function renderResults(rows){
   const out = document.getElementById('results');
-  if (!rows.length){ out.innerHTML = ''; return; }
+  if(!rows.length){ out.innerHTML = ''; return; }
 
   out.innerHTML = rows.map(r => {
-    const cat   = val(r, LEVEL_KEYS[0]) || '—';
-    const armd  = val(r, 'ARMADORA') || val(r, LEVEL_KEYS[1]) || '—';
-    const marca = val(r, 'MARCA') || '';
-    const subm  = val(r, 'SUBMARCA') || '';
-    const model = val(r, 'MODELO') || '';
-    const desc  = val(r, 'DESCRIPCIÓN') || '';
-    const price = val(r, 'PRECIO') || '—';
+    const cat   = r["CATEGORÍA"] || '—';
+    const armd  = r["ARMADORA"]  || '—';
+    const marca = r["MARCA"]     || '';
+    const subm  = r["SUBMARCA"]  || '';
+    const model = r["MODELO"]    || '';
+    const desc  = r["DESCRIPCIÓN"] || '';
+    const price = r["PRECIO"]    || '—';
     return `
       <div class="result">
         <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marca+' '+subm).trim()}</strong></div>
