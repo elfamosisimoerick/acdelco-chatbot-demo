@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (A→H)</title>
+<title>Catálogo ACDelco (capas A→F, precio solo en resultado)</title>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
   .wrap{max-width:960px;margin:0 auto;padding:20px}
@@ -13,6 +13,9 @@
   label{display:block;font-size:12px;color:#94a3b8;margin-bottom:6px}
   select{width:100%;padding:10px;background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:8px;outline:none}
   select:focus{border-color:#60a5fa}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  button{padding:10px 14px;border-radius:8px;border:1px solid #334155;background:#2563eb;color:#fff;cursor:pointer}
+  button:disabled{background:#334155;cursor:not-allowed}
   .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px}
   .badge{display:inline-block;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
   .muted{color:#94a3b8;font-size:13px}
@@ -20,10 +23,14 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Catálogo ACDelco — Capas A→H (con opción de saltar vacíos)</h1>
+  <h1>Catálogo ACDelco — Capas A→F (Precio solo en resultado)</h1>
 
   <div class="card">
     <div id="filters" class="grid"></div>
+    <div class="row">
+      <button id="buscar" disabled>Buscar</button>
+      <button id="limpiar" type="button">Limpiar filtros</button>
+    </div>
     <div id="status" class="muted" style="margin-top:10px"></div>
   </div>
 
@@ -31,51 +38,114 @@
 </div>
 
 <script>
-// Encabezados EXACTOS por columnas A..H
-const HEADERS = ["CATEGORÍA","ARMADORA","MARCA","SUBMARCA","MODELO","DESCRIPCIÓN","PRECIO","STOCK"];
-const USE_LEVELS = HEADERS.slice(0,7); // A..G como filtros
-const EXCLUDE_FROM_FILTER = new Set(["STOCK"]); // H se oculta
-const SKIP_LABEL = "— Saltar nivel (vacío) —";
-
-let DATA = [];
+// ===== 1) Cargar datos =====
+let RAW = [];
 fetch('data.json')
   .then(r => r.json())
-  .then(json => { DATA = normalize(json); init(); })
-  .catch(err => {
-    console.error(err);
-    document.getElementById('status').textContent = 'No se pudo cargar data.json.';
-  });
+  .then(json => { RAW = Array.isArray(json) ? json : []; init(); })
+  .catch(_ => document.getElementById('status').textContent = 'No se pudo cargar data.json.');
 
-// normaliza: a string + trim
-function v(x){ return (x == null ? "" : (""+x)).trim(); }
-function normalize(rows){
-  return rows.map(r => {
-    const nr = {};
-    HEADERS.forEach(h => nr[h] = v(r[h]));
-    return nr;
-  });
+// ===== 2) Detección robusta de columnas (con/sin acento, mayúsc/minúsc) =====
+const CANDIDATES = {
+  categoria:  ['categoria','categoría'],
+  armadora:   ['armadora'],
+  marca:      ['marca'],
+  submarca:   ['submarca','sub-marca'],
+  modelo:     ['modelo'],
+  descripcion:['descripcion','descripción','description'],
+  precio:     ['precio','price'],
+  stock:      ['stock','existencia']
+};
+
+function normKey(s){
+  return (s||'')
+    .toString()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu,'')
+    .toLowerCase()
+    .trim();
 }
 
+function buildKeyMap(keys){
+  const nk = keys.map(k => ({orig:k, norm:normKey(k)}));
+  const map = {};
+  for (const [target, cands] of Object.entries(CANDIDATES)){
+    let found = null;
+    for (const cand of cands){
+      const nc = normKey(cand);
+      const hit = nk.find(x => x.norm === nc);
+      if (hit){ found = hit.orig; break; }
+    }
+    map[target] = found; // puede quedar null si no existe en JSON
+  }
+  return map;
+}
+
+// ===== 3) Estado y utilidades =====
+const SKIP_LABEL = '— Saltar nivel (vacío) —';
 const state = {}; // selección por nivel
+
+let KEYS = {};         // mapeo real de nombres en tu JSON
+let FILTER_KEYS = [];  // columnas usadas como filtros (A..F)
+let PRICE_KEY = null;  // columna precio (no filtra)
+let STOCK_KEY = null;  // stock (ignorado)
+
+function v(x){ return (x==null ? '' : (''+x)).trim(); }
+function unique(list){ return Array.from(new Set(list)).sort(); }
+
+// ===== 4) Inicialización =====
 function init(){
-  // Validar que existan headers esperados
-  const missing = HEADERS.filter(h => !(h in (DATA[0]||{})));
-  if(missing.length){
-    document.getElementById('status').textContent = "Faltan columnas: " + missing.join(", ");
+  const first = RAW[0] || {};
+  const allKeys = Object.keys(first);
+  KEYS = buildKeyMap(allKeys);
+
+  // Filtros = A..F (en este orden), si existen:
+  FILTER_KEYS = [
+    KEYS.categoria, KEYS.armadora, KEYS.marca,
+    KEYS.submarca, KEYS.modelo, KEYS.descripcion
+  ].filter(Boolean);
+
+  // Columnas auxiliares
+  PRICE_KEY = KEYS.precio || null;
+  STOCK_KEY = KEYS.stock  || null; // no se usa en demo
+
+  if (FILTER_KEYS.length === 0){
+    document.getElementById('status').textContent = 'No se encontraron columnas de filtros en data.json.';
     return;
   }
+
   buildFilters();
-  updateOptions();
+  refreshOptions();
+  wireButtons();
 }
 
+function wireButtons(){
+  const buscar = document.getElementById('buscar');
+  const limpiar = document.getElementById('limpiar');
+
+  buscar.addEventListener('click', () => {
+    const rows = filteredRows(FILTER_KEYS.length - 1);
+    renderResults(rows);
+  });
+
+  limpiar.addEventListener('click', () => {
+    for (let i=0;i<FILTER_KEYS.length;i++) delete state[i];
+    buildFilters();
+    refreshOptions();
+    renderResults([]); // limpio resultados hasta que den Buscar
+  });
+}
+
+// ===== 5) Construcción de selects =====
 function buildFilters(){
   const filters = document.getElementById('filters');
   filters.innerHTML = '';
-  USE_LEVELS.forEach((key, idx) => {
+  FILTER_KEYS.forEach((key, idx) => {
     const id = 'level_'+idx;
+    const label = key;
     const block = document.createElement('div');
     block.innerHTML = `
-      <label>${key}</label>
+      <label>${label}</label>
       <select id="${id}" ${idx>0?'disabled':''}>
         <option value="">Selecciona…</option>
       </select>
@@ -84,31 +154,32 @@ function buildFilters(){
     const sel = block.querySelector('select');
     sel.addEventListener('change', () => {
       state[idx] = sel.value;
-      for(let j=idx+1;j<USE_LEVELS.length;j++){
+      // reset niveles siguientes
+      for (let j=idx+1; j<FILTER_KEYS.length; j++){
         delete state[j];
         const s = document.getElementById('level_'+j);
         s.value = '';
         s.innerHTML = '<option value="">Selecciona…</option>';
         s.disabled = true;
       }
-      updateOptions();
+      refreshOptions();
+      // habilitar Buscar si al menos hay una selección
+      document.getElementById('buscar').disabled = Object.values(state).every(v => !v);
     });
   });
 }
 
-function unique(list){ return Array.from(new Set(list)).sort(); }
-
 function filteredRows(uptoIdx){
-  return DATA.filter(r => {
-    for(let i=0;i<=uptoIdx;i++){
-      const k = USE_LEVELS[i];
+  return RAW.filter(r => {
+    for (let i=0; i<=uptoIdx; i++){
+      const key = FILTER_KEYS[i];
       const chosen = state[i] || '';
-      if(!chosen) continue;
-      if(chosen === SKIP_LABEL){
-        // si usuario "salta" el nivel, aceptamos vacío aquí
-        if(r[k] !== '') return false;
-      }else{
-        if(r[k] !== chosen) return false;
+      const val = v(r[key]);
+      if (!chosen) continue;                 // sin filtro en ese nivel
+      if (chosen === SKIP_LABEL){            // saltar nivel: acepta vacíos
+        if (val !== '') return false;
+      } else {
+        if (val !== chosen) return false;
       }
     }
     return true;
@@ -116,54 +187,62 @@ function filteredRows(uptoIdx){
 }
 
 function fillSelect(idx){
-  const key = USE_LEVELS[idx];
+  const key = FILTER_KEYS[idx];
   const sel = document.getElementById('level_'+idx);
   const prevIdx = idx-1;
-  const base = prevIdx>=0 ? filteredRows(prevIdx) : DATA.slice();
+  const base = prevIdx>=0 ? filteredRows(prevIdx) : RAW.slice();
 
-  // opciones reales no vacías
-  const real = unique(base.map(r => r[key]).filter(Boolean));
-  // si hay filas con vacío en este nivel, permitimos "saltar"
-  const hasEmpty = base.some(r => r[key] === '');
+  const real = unique(base.map(r => v(r[key])).filter(Boolean));
+  const hasEmpty = base.some(r => v(r[key]) === '');
 
   let opts = '<option value="">Selecciona…</option>';
-  if(hasEmpty) opts += `<option value="${SKIP_LABEL}">${SKIP_LABEL}</option>`;
+  if (hasEmpty) opts += `<option value="${SKIP_LABEL}">${SKIP_LABEL}</option>`;
   opts += real.map(o => `<option value="${o}">${o}</option>`).join('');
   sel.innerHTML = opts;
 
-  // habilitar si hay algo que elegir
   sel.disabled = (real.length === 0 && !hasEmpty && idx !== 0);
+  // re-seleccionar si aplica
+  if (state[idx] && (state[idx]===SKIP_LABEL || real.includes(state[idx]))){
+    sel.value = state[idx];
+    sel.disabled = false;
+  }
 }
 
-function updateOptions(){
-  USE_LEVELS.forEach((_, idx) => fillSelect(idx));
-
-  const rows = filteredRows(USE_LEVELS.length-1);
-  renderResults(rows);
-  document.getElementById('status').textContent = rows.length ? `${rows.length} resultado(s)` : 'Selecciona filtros.';
+function refreshOptions(){
+  FILTER_KEYS.forEach((_, idx) => fillSelect(idx));
+  // no mostramos resultados automáticamente
+  const count = filteredRows(FILTER_KEYS.length - 1).length;
+  document.getElementById('status').textContent = Object.values(state).some(v=>v)
+    ? `${count} posible(s) resultado(s). Pulsa "Buscar".`
+    : 'Selecciona filtros y luego pulsa "Buscar".';
 }
 
+// ===== 6) Resultado final (PRECIO solo aquí) =====
 function renderResults(rows){
   const out = document.getElementById('results');
-  if(!rows.length){ out.innerHTML = ''; return; }
+  if (!rows.length){ out.innerHTML = '<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
 
-  out.innerHTML = rows.map(r => {
-    const cat   = r["CATEGORÍA"] || '—';
-    const armd  = r["ARMADORA"]  || '—';
-    const marca = r["MARCA"]     || '';
-    const subm  = r["SUBMARCA"]  || '';
-    const model = r["MODELO"]    || '';
-    const desc  = r["DESCRIPCIÓN"] || '';
-    const price = r["PRECIO"]    || '—';
+  // Limitar a 200 tarjetas para no saturar
+  const MAX = 200;
+  const slice = rows.slice(0, MAX);
+
+  out.innerHTML = slice.map(r => {
+    const cat   = v(r[FILTER_KEYS[0]]) || '—';
+    const arm   = FILTER_KEYS[1] ? v(r[FILTER_KEYS[1]]) : '';
+    const marc  = KEYS.marca      ? v(r[KEYS.marca])     : '';
+    const subm  = KEYS.submarca   ? v(r[KEYS.submarca])  : '';
+    const model = KEYS.modelo     ? v(r[KEYS.modelo])    : '';
+    const desc  = KEYS.descripcion? v(r[KEYS.descripcion]): '';
+    const precio= PRICE_KEY       ? v(r[PRICE_KEY])      : '—';
     return `
       <div class="result">
-        <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marca+' '+subm).trim()}</strong></div>
-        <div><span class="badge">Compatible con</span> ${armd} ${marca} ${subm} ${model}</div>
-        <div><span class="badge">Precio</span> ${price}</div>
+        <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
+        <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${model}</div>
+        <div><span class="badge">Precio</span> ${precio}</div>
         <div class="muted">Refaccionaria El Pistón — demo (sin STOCK)</div>
       </div>
     `;
-  }).join('');
+  }).join('') + (rows.length > MAX ? `<div class="muted" style="margin-top:8px">Mostrando ${MAX} de ${rows.length} resultados. Afina filtros.</div>` : '');
 }
 </script>
 </body>
