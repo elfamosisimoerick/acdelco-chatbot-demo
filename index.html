@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Catálogo ACDelco (lee Excel directo)</title>
+<title>Catálogo ACDelco (capas, precio en resultado)</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;background:#0f172a;color:#e2e8f0}
@@ -17,15 +17,14 @@
   .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
   button{padding:10px 14px;border-radius:8px;border:1px solid #334155;background:#2563eb;color:#fff;cursor:pointer}
   button:disabled{background:#334155;cursor:not-allowed}
-  .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px}
+  .result{background:#0b1220;border:1px solid #334155;border-radius:12px;padding:14px;margin-bottom:12px}
   .badge{display:inline-block;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:4px 10px;font-size:12px;margin-right:6px}
   .muted{color:#94a3b8;font-size:13px}
-  .debug{background:#0b1220;border:1px dashed #475569;border-radius:12px;padding:14px;margin-top:12px;white-space:pre-wrap}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Catálogo ACDelco — leyendo Excel (A→F, precio solo en resultado)</h1>
+  <h1>Catálogo ACDelco — por capas</h1>
 
   <div class="card">
     <div id="filters" class="grid"></div>
@@ -34,15 +33,17 @@
       <button id="limpiar" type="button">Limpiar</button>
     </div>
     <div id="status" class="muted" style="margin-top:10px"></div>
-    <div class="debug" id="debug">Diagnóstico…</div>
   </div>
 
   <div id="results"></div>
 </div>
 
 <script>
-const FILE_URL = 'PRUEBAS.xlsx'; // súbelo a la raíz del repo
+/* ========= Config ========= */
+const FILE_URL = 'PRUEBAS.xlsx'; // Debe estar en la raíz del repo
 const SKIP = '— Saltar nivel (vacío) —';
+
+/* Columnas esperadas (A..H) con tolerancia a acentos/mayúsculas */
 const CANDS = {
   categoria:['categoria','categoría'],
   armadora:['armadora'],
@@ -51,27 +52,33 @@ const CANDS = {
   modelo:['modelo'],
   descripcion:['descripcion','descripción','description'],
   precio:['precio','price'],
-  stock:['stock','existencia']
+  stock:['stock','existencia'] // no se usa para filtrar
 };
+
+/* ========= Utilidades ========= */
+function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().trim();}
+function v(x){return (x==null?'':(''+x)).trim();}
+function uniq(a){return Array.from(new Set(a)).sort();}
+
+/* ========= Estado ========= */
 let RAW=[], KEYS={}, FILTER_KEYS=[], PRICE_KEY=null;
 const state={};
 
+/* ========= Carga del Excel ========= */
 fetch(FILE_URL)
   .then(r=>r.arrayBuffer())
   .then(buf=>{
     const wb = XLSX.read(buf, {type:'array'});
     const ws = wb.Sheets[wb.SheetNames[0]];
-    RAW = XLSX.utils.sheet_to_json(ws); // usa encabezados de la fila 1
+    RAW = XLSX.utils.sheet_to_json(ws); // usa fila 1 como encabezados
     init();
   })
   .catch(err=>{
     console.error(err);
-    document.getElementById('status').textContent='No se pudo leer PRUEBAS.xlsx. ¿Está en la raíz?';
+    document.getElementById('status').textContent='No se pudo leer PRUEBAS.xlsx. ¿Está en la raíz y con ese nombre exacto?';
   });
 
-function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().trim();}
-function v(x){return (x==null?'':(''+x)).trim();}
-function uniq(a){return Array.from(new Set(a)).sort();}
+/* ========= Detección de encabezados ========= */
 function mapKeys(keys){
   const nk=keys.map(k=>({orig:k,n:nrm(k)})); const out={};
   for(const [t,opts] of Object.entries(CANDS)){
@@ -80,23 +87,32 @@ function mapKeys(keys){
   } return out;
 }
 
+/* ========= Inicialización de UI ========= */
 function init(){
   const first=RAW[0]||{}; const all=Object.keys(first);
-  KEYS=mapKeys(all);
-  FILTER_KEYS=[KEYS.categoria,KEYS.armadora,KEYS.marca,KEYS.submarca,KEYS.modelo,KEYS.descripcion].filter(Boolean);
-  PRICE_KEY=KEYS.precio||null;
+  KEYS = mapKeys(all);
+  FILTER_KEYS = [
+    KEYS.categoria, KEYS.armadora, KEYS.marca,
+    KEYS.submarca, KEYS.modelo, KEYS.descripcion
+  ].filter(Boolean);
+  PRICE_KEY = KEYS.precio || null;
 
-  buildFilters(); refreshOptions();
+  buildFilters();
+  refreshOptions();
 
-  // Diagnóstico
-  const cats=uniq(RAW.map(r=>v(r[KEYS.categoria]||'')).filter(Boolean));
-  document.getElementById('debug').textContent =
-    `Filas Excel: ${RAW.length}\nEncabezados: ${JSON.stringify(KEYS,null,2)}\n# Categorías: ${cats.length}\nEjemplos: ${cats.slice(0,20).join(', ')}`;
+  document.getElementById('buscar').addEventListener('click',()=>{
+    const rows=filtered(FILTER_KEYS.length-1);
+    render(rows);
+  });
+  document.getElementById('limpiar').addEventListener('click',()=>{
+    for(let i=0;i<FILTER_KEYS.length;i++) delete state[i];
+    buildFilters(); refreshOptions(); render([]);
+  });
 
-  document.getElementById('buscar').addEventListener('click',()=>render(filtered(FILTER_KEYS.length-1)));
-  document.getElementById('limpiar').addEventListener('click',()=>{ for(let i=0;i<FILTER_KEYS.length;i++) delete state[i]; buildFilters(); refreshOptions(); render([]); });
+  document.getElementById('status').textContent='Selecciona filtros y pulsa "Buscar".';
 }
 
+/* ========= Construcción de filtros ========= */
 function buildFilters(){
   const c=document.getElementById('filters'); c.innerHTML='';
   FILTER_KEYS.forEach((key,idx)=>{
@@ -107,47 +123,75 @@ function buildFilters(){
     const sel=block.querySelector('select');
     sel.addEventListener('change',()=>{
       state[idx]=sel.value;
-      for(let j=idx+1;j<FILTER_KEYS.length;j++){ delete state[j]; const s=document.getElementById('level_'+j); s.value=''; s.innerHTML='<option value="">Selecciona…</option>'; s.disabled=true; }
+      for(let j=idx+1;j<FILTER_KEYS.length;j++){
+        delete state[j];
+        const s=document.getElementById('level_'+j);
+        s.value=''; s.innerHTML='<option value="">Selecciona…</option>'; s.disabled=true;
+      }
       refreshOptions();
-      document.getElementById('buscar').disabled = Object.values(state).every(v=>!v);
+      document.getElementById('buscar').disabled = Object.values(state).every(x=>!x);
     });
   });
 }
 
+/* ========= Lógica de filtrado ========= */
 function filtered(upto){
   return RAW.filter(r=>{
     for(let i=0;i<=upto;i++){
       const key=FILTER_KEYS[i], chosen=state[i]||'', val=v(r[key]);
-      if(!chosen) continue;
-      if(chosen===SKIP){ if(val!=='') return false; } else { if(val!==chosen) return false; }
-    } return true;
+      if(!chosen) continue;                // sin filtro en ese nivel
+      if(chosen===SKIP){ if(val!=='') return false; } // saltar vacíos
+      else { if(val!==chosen) return false; }
+    }
+    return true;
   });
 }
 
 function fillSelect(idx){
-  const key=FILTER_KEYS[idx], sel=document.getElementById('level_'+idx), base=idx>0?filtered(idx-1):RAW.slice();
-  const real=uniq(base.map(r=>v(r[key])).filter(Boolean)), hasEmpty=base.some(r=>v(r[key])==='');
-  let opts='<option value="">Selecciona…</option>';
-  if(hasEmpty) opts+=`<option value="${SKIP}">${SKIP}</option>`;
-  opts+=real.map(o=>`<option value="${o}">${o}</option>`).join('');
-  sel.innerHTML=opts; sel.disabled=(real.length===0 && !hasEmpty && idx!==0);
-  if(state[idx] && (state[idx]===SKIP || real.includes(state[idx]))){ sel.value=state[idx]; sel.disabled=false; }
+  const key=FILTER_KEYS[idx];
+  const sel=document.getElementById('level_'+idx);
+  const base = idx>0 ? filtered(idx-1) : RAW.slice();
+
+  const real=uniq(base.map(r=>v(r[key])).filter(Boolean));
+  const hasEmpty = base.some(r=>v(r[key])==='');
+
+  let opts = '<option value="">Selecciona…</option>';
+  if(hasEmpty) opts += `<option value="${SKIP}">${SKIP}</option>`;
+  opts += real.map(o=>`<option value="${o}">${o}</option>`).join('');
+  sel.innerHTML = opts;
+
+  sel.disabled = (real.length===0 && !hasEmpty && idx!==0);
+  if(state[idx] && (state[idx]===SKIP || real.includes(state[idx]))){
+    sel.value = state[idx]; sel.disabled=false;
+  }
 }
 
-function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); document.getElementById('status').textContent='Selecciona filtros y pulsa "Buscar".'; }
+function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
 
+/* ========= Render de resultados ========= */
 function render(rows){
   const out=document.getElementById('results');
   if(!rows.length){ out.innerHTML='<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
-  const MAX=200, slice=rows.slice(0,MAX);
-  out.innerHTML=slice.map(r=>{
-    const cat=v(r[KEYS.categoria]||''), arm=v(r[KEYS.armadora]||''), marc=v(r[KEYS.marca]||''), subm=v(r[KEYS.submarca]||''), mod=v(r[KEYS.modelo]||''), desc=v(r[KEYS.descripcion]||''), precio=PRICE_KEY?v(r[PRICE_KEY]):'—';
-    return `<div class="result">
-      <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
-      <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${mod}</div>
-      <div><span class="badge">Precio</span> ${precio}</div>
-      <div class="muted">Demo (sin STOCK)</div>
-    </div>`;
+
+  const MAX=200;
+  const slice=rows.slice(0,MAX);
+
+  out.innerHTML = slice.map(r=>{
+    const cat   = v(r[KEYS.categoria]||'');
+    const arm   = v(r[KEYS.armadora]||'');
+    const marc  = v(r[KEYS.marca]||'');
+    const subm  = v(r[KEYS.submarca]||'');
+    const mod   = v(r[KEYS.modelo]||'');
+    const desc  = v(r[KEYS.descripcion]||'');
+    const precio= PRICE_KEY ? v(r[PRICE_KEY]) : '—';
+    return `
+      <div class="result">
+        <div><span class="badge">Producto</span> <strong>${desc || (cat+' '+marc+' '+subm).trim()}</strong></div>
+        <div><span class="badge">Compatible con</span> ${arm} ${marc} ${subm} ${mod}</div>
+        <div><span class="badge">Precio</span> ${precio}</div>
+        <div class="muted">Demo (sin STOCK)</div>
+      </div>
+    `;
   }).join('') + (rows.length>MAX?`<div class="muted" style="margin-top:8px">Mostrando ${MAX} de ${rows.length} resultados. Afina filtros.</div>`:'');
 }
 </script>
