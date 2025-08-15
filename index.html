@@ -50,36 +50,58 @@
 const FILE_URL = 'PRUEBAS.xlsx'; // cambia si tu archivo se llama distinto
 const SKIP = '— Saltar nivel (vacío) —';
 
-// Sinónimos (tolerantes) — añadimos variantes para SUBMARCA
+// Sinónimos tolerantes
 const CANDS = {
-  categoria:['categoria','categoría'],
-  armadora:['armadora'],
-  marca:['marca'],
-  submarca:[
-    'submarca','sub-marca','sub marca','sub  marca','sub_marca','sub–marca','sub—marca',
-    'sub model','submodelo','linea','línea','linea modelo','línea modelo'
+  categoria: [
+    'categoria','categoría','categorias','categorías','cat','familia','familía','grupo','rubro','línea','linea'
   ],
-  modelo:['modelo','model'],
-  descripcion:['descripcion','descripción','description','desc'],
-  precio:['precio','price','$','costo','coste'],
-  inventario:['inventario','existencia','existencias','stock','disponibilidad'],
-  part:['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
+  armadora: ['armadora','armador','fabricante','marca vehiculo','marca vehículo','oem'],
+  marca:    ['marca','brand'],
+  submarca: [
+    'submarca','sub-marca','sub marca','sub  marca','sub_marca','sub–marca','sub—marca',
+    'submodelo','sub modelo','linea modelo','línea modelo','linea','línea','serie','version','versión'
+  ],
+  modelo: ['modelo','model','año','years','anio','año(s)'],
+  descripcion: ['descripcion','descripción','description','desc','detalle','detalles'],
+  precio: ['precio','price','$','costo','coste'],
+  inventario: ['inventario','existencia','existencias','stock','disponibilidad'],
+  part: ['numero de parte','número de parte','num de parte','no. parte','no parte','sku','codigo','código','codigo de parte','código de parte','clave','refaccion','refacción']
 };
+
+// Palabras típicas de categorías para heurística (fallback)
+const CATEGORY_HINTS = [
+  'aceites','alternadores','amortiguadores','anticongelante','balatas','baleros','bandas',
+  'baterías','baterias','bobinas','bujías','bujias','bombas de agua','clutches','cables de bujía','cables bujia',
+  'filtros','inyectores','sensores','empaques','pastillas','radiadores','tambores'
+].map(s => s.toLowerCase());
 
 function nrm(s){return (s||'').toString().normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase().replace(/\s+/g,' ').trim();}
 function v(x){return (x==null?'':(''+x)).trim();}
 function uniq(a){return Array.from(new Set(a)).sort();}
+function toNumberLoose(s){
+  const m = (s||'').toString().match(/-?\d+([.,]\d+)?/);
+  if(m){ return parseFloat(m[0].replace(',','.')) }
+  const n = parseFloat((s||'').toString().replace(',','.'));
+  return isNaN(n) ? null : n;
+}
+function isOutOfStock(txt){
+  const t = v(txt).toLowerCase();
+  if(!t) return true;
+  if(/agotad|sin exist|no hay|no disponible|0(?!\d)/.test(t)) return true;
+  const num = toNumberLoose(t);
+  return num===0;
+}
 
-// Fuzzy: además del match exacto normalizado, intenta "contiene todas las palabras"
+// Fuzzy robusto: primero exacto, luego "contiene todas las palabras"
 function fuzzyPick(allKeys, synonyms){
   const kn = allKeys.map(k=>({orig:k, n:nrm(k)}));
-  // 1) exactos por normalización
+  // exacto
   for(const syn of synonyms){
     const ns = nrm(syn);
     const hit = kn.find(x => x.n === ns);
     if(hit) return hit.orig;
   }
-  // 2) contiene todas las palabras (ej. "sub   marca", "línea modelo")
+  // contiene todas las palabras
   for(const syn of synonyms){
     const words = nrm(syn).split(' ').filter(Boolean);
     const hit = kn.find(x => words.every(w => x.n.includes(w)));
@@ -104,20 +126,45 @@ fetch(FILE_URL)
     document.getElementById('status').textContent='No se pudo leer el Excel. ¿Está en la raíz y con el nombre correcto?';
   });
 
-function mapKeys(keys){
+// Detección con heurística extra para Categoría
+function mapKeysWithHeuristics(keys){
   const out = {};
+  // 1) Intento normal con fuzzyPick
   for(const [target, syns] of Object.entries(CANDS)){
     out[target] = fuzzyPick(keys, syns);
+  }
+  // 2) Si Categoría no se detectó, la inferimos buscando la columna con más "hits" de CATEGORY_HINTS
+  if(!out.categoria){
+    let bestCol = null, bestScore = -1;
+    for(const col of keys){
+      // ignorar columnas que ya se asignaron a otra cosa importante
+      if(Object.values(out).includes(col)) continue;
+      const values = RAW.slice(0, 500).map(r => v(r[col]).toLowerCase()); // mirar primeras 500 filas máx.
+      let score = 0;
+      for(const vv of values){
+        if(!vv) continue;
+        for(const hint of CATEGORY_HINTS){
+          if(vv.includes(hint)){ score++; break; }
+        }
+      }
+      if(score > bestScore){ bestScore = score; bestCol = col; }
+    }
+    if(bestScore > 0) out.categoria = bestCol;
+  }
+  // 3) Evitar que Descripción "pise" Categoría: si descripción quedó en la misma columna que categoría, anulamos descripción.
+  if(out.descripcion && out.categoria && out.descripcion === out.categoria){
+    out.descripcion = null;
   }
   return out;
 }
 
 function init(){
-  const first=RAW[0]||{};
-  const all=Object.keys(first).map(k => k.replace(/^\s+|\s+$/g,'')); // recorta espacios extremos
-  KEYS = mapKeys(all);
+  const first = RAW[0] || {};
+  // recorta espacios invisibles en nombres de columnas
+  const all = Object.keys(first).map(k => k.replace(/^\s+|\s+$/g,''));
+  KEYS = mapKeysWithHeuristics(all);
 
-  // Filtros (etiquetas fijas para que se vea profesional)
+  // Orden fijo y etiquetas profesionales
   const order = [
     {key:'categoria', label:'Categoría'},
     {key:'armadora',  label:'Armadora'},
@@ -128,7 +175,7 @@ function init(){
   ];
   FILTER_KEYS = order
     .map(o => ({label:o.label, col: KEYS[o.key]}))
-    .filter(o => !!o.col); // solo los que existan en el Excel
+    .filter(o => !!o.col);
 
   buildFilters();
   refreshOptions();
@@ -220,40 +267,25 @@ function fillSelect(idx){
 
 function refreshOptions(){ FILTER_KEYS.forEach((_,i)=>fillSelect(i)); }
 
-function toNumberLoose(s){
-  const m = (s||'').toString().match(/-?\d+([.,]\d+)?/);
-  if(m){ return parseFloat(m[0].replace(',','.')) }
-  const n = parseFloat((s||'').toString().replace(',','.'));
-  return isNaN(n) ? null : n;
-}
-function isOutOfStock(txt){
-  const t = v(txt).toLowerCase();
-  if(!t) return true;
-  if(/agotad|sin exist|no hay|no disponible|0(?!\d)/.test(t)) return true;
-  const num = toNumberLoose(t);
-  return num===0;
-}
-
 function render(rows){
   const out=document.getElementById('results');
   if(!rows.length){ out.innerHTML='<div class="muted">Sin resultados. Ajusta filtros.</div>'; return; }
 
   const MAX=200, slice=rows.slice(0,MAX);
 
-  const PREC = CANDS.precio;
-  const INV  = CANDS.inventario;
-  const PART = CANDS.part;
+  const catCol = KEYS.categoria, armCol = KEYS.armadora, marCol = KEYS.marca, subCol = KEYS.submarca, modCol = KEYS.modelo, desCol = KEYS.descripcion;
+  const preCol = KEYS.precio, invCol = KEYS.inventario, parCol = KEYS.part;
 
   out.innerHTML = slice.map(r=>{
-    const cat   = KEYS.categoria ? v(r[KEYS.categoria]) : '';
-    const arm   = KEYS.armadora  ? v(r[KEYS.armadora])  : '';
-    const marc  = KEYS.marca     ? v(r[KEYS.marca])     : '';
-    const subm  = KEYS.submarca  ? v(r[KEYS.submarca])  : '';
-    const mod   = KEYS.modelo    ? v(r[KEYS.modelo])    : '';
-    const desc  = KEYS.descripcion? v(r[KEYS.descripcion]): '';
-    const precio= KEYS.precio    ? v(r[KEYS.precio])    : '—';
-    const inv   = KEYS.inventario? v(r[KEYS.inventario]): '';
-    const parte = KEYS.part      ? v(r[KEYS.part])      : '';
+    const cat   = catCol ? v(r[catCol]) : '';
+    const arm   = armCol ? v(r[armCol]) : '';
+    const marc  = marCol ? v(r[marCol]) : '';
+    const subm  = subCol ? v(r[subCol]) : '';
+    const mod   = modCol ? v(r[modCol]) : '';
+    const desc  = desCol ? v(r[desCol]) : '';
+    const precio= preCol ? v(r[preCol]) : '—';
+    const inv   = invCol ? v(r[invCol]) : '';
+    const parte = parCol ? v(r[parCol]) : '';
 
     const invClass = inv ? (isOutOfStock(inv) ? 'inv-bad' : 'inv-ok') : '';
 
