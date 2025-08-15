@@ -51,7 +51,7 @@ function init(){
     document.getElementById('status').textContent = 'No hay datos en data.json.';
     return;
   }
-  COLS = Object.keys(DATA[0]);        // Ej: ["CATEGORÍA","ARMADORA","MARCA","SUBMARCA","MODELO","DESCRIPCIÓN","PRECIO","STOCK"]
+  COLS = Object.keys(DATA[0]);        // ["CATEGORÍA","ARMADORA","MARCA","SUBMARCA","MODELO","DESCRIPCIÓN","PRECIO","STOCK"]
   const first8 = COLS.slice(0, 8);    // A..H
   LEVEL_KEYS = first8.filter(k => !EXCLUDE.has(k.toLowerCase())).slice(0, 7);
 
